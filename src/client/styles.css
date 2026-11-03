@@ -511,8 +511,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .match-clock { width: 79px; padding: 8px 5px; }
   .match-clock strong { font-size: 31px; }
   .match-clock > span:first-child { font-size: 5px; letter-spacing: .3px; }
-  .match-utility { top: max(115px, calc(env(safe-area-inset-top) + 100px)); right: 13px; }
-  .arena-hazards { top: max(115px, calc(env(safe-area-inset-top) + 100px)); left: 13px; transform: none; gap: 8px; padding: 8px; font-size: 7px; letter-spacing: .4px; }
+  .match-utility { top: max(130px, calc(env(safe-area-inset-top) + 115px)); right: 13px; }
+  .arena-hazards { top: max(130px, calc(env(safe-area-inset-top) + 115px)); left: 13px; transform: none; gap: 8px; padding: 8px; font-size: 7px; letter-spacing: .4px; }
   .hazard-screws { padding-left: 8px; }
   .match-utility .icon-button { width: 30px; height: 30px; }
   .match-overlay { padding: 160px 16px 160px; }

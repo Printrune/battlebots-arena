@@ -5,10 +5,12 @@ import type { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import type { Scene } from '@babylonjs/core/scene';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { BotId, PaintId } from '../../shared/protocol';
+import type { DamagePartId, RobotDamage } from '../../shared/damage';
 import { ModelBuilder } from './models/geometry';
 import { createLiveries, makeMaterials } from './models/materials';
 import { buildWitchDoctor } from './models/witchdoctor';
 import { buildTombstone } from './models/tombstone';
+import { DamageVisuals } from './models/damage';
 
 export interface BotModel {
   root: TransformNode;
@@ -18,9 +20,11 @@ export interface BotModel {
   accent: PBRMaterial;
   glow: StandardMaterial;
   meshes: Mesh[];
+  parts: ReadonlyMap<DamagePartId, TransformNode>;
   botId: BotId;
   paint: PaintId;
-  setDamage(damage: number): void;
+  setDamage(damage: RobotDamage, hullDamage: number): void;
+  pulseDamage(time: number, dt: number): void;
   dispose(): void;
 }
 
@@ -42,25 +46,17 @@ export function makeBot(scene: Scene, botId: BotId, paint: PaintId, id: string):
     ? buildWitchDoctor(builder, mats)
     : (buildTombstone(builder, mats), undefined);
   const meshes = builder.finish();
+  const damageVisuals = new DamageVisuals(scene, builder.root, botId, builder.parts, id);
+  meshes.push(...damageVisuals.artifacts);
   const glow = material(scene, `${id}-status`, '#343832', 0);
   glow.emissiveColor = Color3.Black();
-  const coatings = [mats.paint, mats.cover, mats.deck, mats.side, mats.rear];
-  const originalCoatings = coatings.map((coating) => coating.albedoColor.clone());
   return {
     root: builder.root, wheels: builder.wheels, weapon: builder.weapon,
-    ...(selfRighter ? { selfRighter } : {}), accent: mats.paint, glow, meshes, botId, paint,
-    setDamage(damage) {
-      const amount = Math.max(0, Math.min(1, damage));
-      for (let index = 0; index < coatings.length; index += 1) {
-        const coating = coatings[index]; const original = originalCoatings[index];
-        if (coating && original) coating.albedoColor = original.scale(1 - amount * 0.26);
-      }
-      mats.paint.roughness = 0.38 + amount * 0.35;
-      mats.cover.roughness = 0.52 + amount * 0.25;
-      mats.black.roughness = 0.44 + amount * 0.28;
-      mats.steel.roughness = 0.36 + amount * 0.20;
-    },
+    ...(selfRighter ? { selfRighter } : {}), accent: mats.paint, glow, meshes, parts: builder.parts, botId, paint,
+    setDamage(damage, hullDamage) { damageVisuals.setDamage(damage, hullDamage); },
+    pulseDamage(time, dt) { damageVisuals.pulseDamage(time, dt); },
     dispose() {
+      damageVisuals.dispose();
       builder.root.dispose(false);
       glow.dispose();
       for (const mat of Object.values(mats)) mat.dispose(false, false);

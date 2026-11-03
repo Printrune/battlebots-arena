@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ARENA_LAYOUT, ARENA_MATCH_SECONDS, arenaStateSchema } from './arena';
+import { damageParts, debrisSnapshotSchema, MAX_DEBRIS, robotDamageSchema } from './damage';
 
 export const TICK_RATE = 30;
 export const SNAPSHOT_RATE = 15;
@@ -136,6 +137,13 @@ export const playerSnapshotSchema = z.object({
   recoveryCooldown: z.number(), wheelSpeedLeft: z.number(), wheelSpeedRight: z.number(),
   weaponActive: z.boolean(), connected: z.boolean(), ready: z.boolean(),
   lastInputSeq: z.number(), damageDealt: z.number(), hits: z.number(),
+  damage: robotDamageSchema,
+}).superRefine((player, context) => {
+  const expected = damageParts(player.botId);
+  const ids = new Set(player.damage.parts.map((part) => part.id));
+  if (ids.size !== expected.length || player.damage.parts.length !== expected.length || expected.some((part) => !ids.has(part.id))) {
+    context.addIssue({ code: 'custom', path: ['damage', 'parts'], message: 'Damage parts must match the selected robot.' });
+  }
 });
 export type PlayerSnapshot = z.infer<typeof playerSnapshotSchema>;
 export const matchResultSchema = z.object({
@@ -150,7 +158,7 @@ export const matchPhaseSchema = z.discriminatedUnion('kind', [
 ]);
 export type MatchPhase = z.infer<typeof matchPhaseSchema>;
 export const matchEventSchema = z.object({
-  id: z.number(), kind: z.enum(['hit', 'recover', 'hazard']), sourceId: z.string(),
+  id: z.number(), kind: z.enum(['hit', 'recover', 'hazard', 'break']), sourceId: z.string(),
   targetId: z.string(), position: vectorSchema, strength: z.number(),
 });
 export type MatchEvent = z.infer<typeof matchEventSchema>;
@@ -158,6 +166,7 @@ export const matchSnapshotSchema = z.object({
   roomId: z.string(), tick: z.number(), phase: matchPhaseSchema,
   players: z.array(playerSnapshotSchema), events: z.array(matchEventSchema),
   arena: arenaStateSchema,
+  debris: z.array(debrisSnapshotSchema).max(MAX_DEBRIS),
 });
 export type MatchState = z.infer<typeof matchSnapshotSchema>;
 

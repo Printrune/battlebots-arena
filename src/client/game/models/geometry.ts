@@ -5,6 +5,7 @@ import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Material } from '@babylonjs/core/Materials/material';
 import type { Scene } from '@babylonjs/core/scene';
+import type { DamagePartId } from '../../../shared/damage';
 
 export type Point2 = readonly [number, number];
 export type Point3 = readonly [number, number, number];
@@ -55,6 +56,7 @@ export class ModelBuilder {
   readonly root: TransformNode;
   readonly weapon: TransformNode;
   readonly wheels: TransformNode[] = [];
+  readonly parts = new Map<DamagePartId, TransformNode>();
   private readonly meshes: Mesh[] = [];
   private readonly parents: TransformNode[] = [];
   private count = 0;
@@ -63,6 +65,7 @@ export class ModelBuilder {
     this.root = new TransformNode(`bot-${id}`, scene);
     this.parents.push(this.root);
     this.weapon = this.pivot('weapon');
+    this.parts.set('weapon', this.weapon);
   }
 
   pivot(name: string, position: Point3 = [0, 0, 0]): TransformNode {
@@ -70,6 +73,23 @@ export class ModelBuilder {
     node.parent = this.root;
     node.position.set(...position);
     this.parents.push(node);
+    return node;
+  }
+
+  checkpoint(): number { return this.meshes.length; }
+
+  registerPart(id: DamagePartId, node: TransformNode): void { this.parts.set(id, node); }
+
+  /** Preserve a physical panel's seam and local origin before material batching. */
+  capturePart(id: DamagePartId, position: Point3, from: number): TransformNode {
+    const node = this.pivot(id, position);
+    for (let index = from; index < this.meshes.length; index += 1) {
+      const mesh = this.meshes[index];
+      if (!mesh || mesh.parent !== this.root) continue;
+      mesh.position.subtractInPlace(node.position);
+      mesh.parent = node;
+    }
+    this.parts.set(id, node);
     return node;
   }
 

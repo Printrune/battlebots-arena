@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 
-type IconName = 'arrow' | 'plus' | 'link' | 'sound' | 'muted' | 'close' | 'check' | 'recover' | 'weapon' | 'hammer' | 'exit' | 'rotate' | 'copy' | 'signal' | 'help';
+type IconName = 'arrow' | 'plus' | 'link' | 'sound' | 'muted' | 'close' | 'check' | 'recover' | 'weapon' | 'hammer' | 'warning' | 'exit' | 'rotate' | 'copy' | 'signal' | 'help';
 
 export function Icon({ name, size = 20, style }: { name: IconName; size?: number; style?: CSSProperties }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -14,6 +14,7 @@ export function Icon({ name, size = 20, style }: { name: IconName; size?: number
     recover: <><path d="M5 8a8 8 0 1 1-1 8M5 3v6h6" /></>,
     weapon: <><path d="m14 2-9 12h7l-2 8 9-12h-7z" /></>,
     hammer: <><path d="m5 4 4-2 7 8-4 4zM12 13 4 21M15 9l5 5-4 4-5-5" /></>,
+    warning: <><path d="m12 3 10 18H2zM12 9v5M12 17h.01" /></>,
     exit: <><path d="M10 4H4v16h6M10 12h11M17 8l4 4-4 4" /></>,
     rotate: <><rect x="7" y="2" width="10" height="20" rx="2" transform="rotate(35 12 12)" /><path d="M3 7V3h4M21 17v4h-4" /></>,
     copy: <><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M15 8V3H3v13h5" /></>,

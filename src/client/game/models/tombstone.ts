@@ -1,4 +1,5 @@
 import { BOTS } from '../../../shared/protocol';
+import { wheelPartId } from '../../../shared/damage';
 import { ModelBuilder, type Point2, type Point3 } from './geometry';
 import type { ModelMaterials } from './materials';
 
@@ -33,16 +34,34 @@ export function buildTombstone(builder: ModelBuilder, mats: ModelMaterials): voi
   const { weapon } = builder;
   weapon.position.set(definition.mount.x, definition.mount.y, definition.mount.z);
 
-  builder.box('rear-drive-box', [1.94, 0.43, 1.27], [0, -0.18, -0.71], mats.paint);
+  // Open rear casing exposes the drive pack when the independent roof tears off.
+  builder.box('rear-drive-floor', [1.94, 0.065, 1.27], [0, -0.365, -0.71], mats.paint);
+  builder.box('rear-drive-front-bulkhead', [1.86, 0.38, 0.055], [0, -0.17, -0.10], mats.black);
+  const topStart = builder.checkpoint();
   builder.box('rear-deck-reaper-livery', [1.91, 0.045, 1.25], [0, 0.064, -0.71], mats.deck);
+  for (const side of [-1, 1]) for (const z of [-1.25, -0.89, -0.50, -0.18]) builder.bolt([side * 0.87, 0.108, z], 0.06, mats.steel);
+  builder.capturePart('armor-top', [0, 0.064, -0.71], topStart);
+  const rearStart = builder.checkpoint();
+  builder.box('rear-armour-wall', [1.94, 0.40, 0.065], [0, -0.18, -1.33], mats.paint);
   builder.box('rear-sponsor-panel', [1.87, 0.38, 0.025], [0, -0.18, -1.36], mats.rear);
+  builder.capturePart('armor-rear', [0, -0.18, -1.36], rearStart);
   for (const side of [-1, 1]) {
-    builder.tire(side * physics.trackWidth / 2, physics.wheelZ[0] ?? -0.65, physics.wheelRadius, physics.wheelWidth, mats.rubber, mats.paint, mats.steel, mats.black);
+    const wheel = builder.tire(side * physics.trackWidth / 2, physics.wheelZ[0] ?? -0.65, physics.wheelRadius, physics.wheelWidth, mats.rubber, mats.paint, mats.steel, mats.black);
+    builder.registerPart(wheelPartId('tombstone', side, 0), wheel);
+    const sideStart = builder.checkpoint();
+    builder.box('drive-casing-side-wall', [0.065, 0.40, 1.24], [side * 0.95, -0.18, -0.71], mats.paint);
     builder.box('side-drive-panel', [0.025, 0.36, 1.19], [side * 0.98, -0.17, -0.71], mats.side);
+    builder.capturePart(side < 0 ? 'armor-left' : 'armor-right', [side * 0.98, -0.17, -0.71], sideStart);
     builder.box('drive-bearing-carrier', [0.10, 0.31, 0.46], [side * 0.99, -0.03, -0.65], mats.bright);
     builder.cylinder('wheel-bearing', 0.29, 0.13, [side * 1.02, 0, -0.65], mats.black, 'x');
-    for (const z of [-1.25, -0.89, -0.50, -0.18]) builder.bolt([side * 0.87, 0.108, z], 0.06, mats.steel);
   }
+  for (const side of [-1, 1]) {
+    builder.cylinder('exposed-rear-drive-motor', 0.30, 0.68, [side * 0.55, -0.14, -0.69], mats.steel, 'z');
+    builder.cylinder('rear-motor-end-cap', 0.32, 0.08, [side * 0.55, -0.14, -1.04], mats.black, 'z');
+    builder.tube('rear-battery-cable', [[side * 0.25, -0.09, -0.95], [side * 0.31, -0.06, -0.64], [side * 0.5, -0.08, -0.40]], 0.018, mats.red);
+  }
+  builder.box('exposed-battery-pack', [0.46, 0.25, 0.68], [0, -0.19, -0.73], mats.black);
+  for (const z of [-0.91, -0.57]) builder.box('battery-retaining-strap', [0.49, 0.035, 0.075], [0, -0.045, z], mats.steel);
 
   // The chassis converges continuously into a shaft at the nose. Roof and floor
   // rails have real triangular spaces through which the motor and drive chain show.

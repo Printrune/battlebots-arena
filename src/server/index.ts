@@ -80,8 +80,9 @@ const gameServer = new Server({
         } catch (error) { next(error); }
       });
     } else {
-      app.use(express.static(path.resolve('dist/client'), { maxAge: '1h', index: false }));
-      app.get('/', (_req, res) => res.sendFile(path.resolve('dist/client/index.html')));
+      const clientDirectory = path.resolve('dist/client');
+      app.use(express.static(clientDirectory, { maxAge: '1h', index: false }));
+      app.get('/', (_req, res) => res.sendFile('index.html', { root: clientDirectory }));
     }
     app.use((_req, res) => res.status(404).json({ error: 'Page not found.' }));
     app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -197,6 +197,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
 .fighter-hud:not(.fighter-hud--local) .health-track > div { margin-left: auto; }
 .fighter-caption { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 8px; letter-spacing: 1px; color: #b4c1b4; padding-top: 8px; text-shadow: 0 2px 6px #000; }
 .fighter-hud:not(.fighter-hud--local) .fighter-meta, .fighter-hud:not(.fighter-hud--local) .fighter-caption { flex-direction: row-reverse; }
+.fighter-hud--critical .fighter-meta strong { color: #f3ad84; }
+.component-condition { display: flex; align-items: center; gap: 7px; margin-top: 7px; min-height: 15px; }
+.fighter-hud:not(.fighter-hud--local) .component-condition { flex-direction: row-reverse; }
+.wheel-group-label { color: #899c83; font-size: 6px; font-weight: 600; letter-spacing: 1px; }
+.wheel-chips { display: flex; gap: 4px; }
+.wheel-chip { position: relative; display: grid; place-items: center; width: 22px; height: 15px; border: 1px solid #b0c49d65; background: #111c14b8; color: #c6d5b6; font-size: 7px; font-weight: 700; letter-spacing: .3px; }
+.wheel-chip--damaged { border-color: #b9a372; color: #d6bd86; background: #352c199c; }
+.wheel-chip--critical { border-color: #dfaa55; color: #ffd08a; background: #583a16b8; }
+.wheel-chip--lost { border-color: #bc795c80; color: #c38b71; background: #2e1d16b8; }
+.wheel-chip--lost::after { position: absolute; content: ''; width: 25px; height: 1px; background: #e5a581; transform: rotate(-31deg); }
 .match-clock { text-align: center; width: 128px; flex: 0 0 auto; padding: 7px 10px 9px; background: #111816cc; border: 1px solid #9eaa9636; }
 .match-clock > span:first-child { font-size: 7px; letter-spacing: 1.8px; color: #a1af9f; display: block; }
 .match-clock strong { font-family: 'Barlow Condensed', Impact, sans-serif; font-size: 44px; font-weight: 600; letter-spacing: 1px; line-height: 1.15; }
@@ -213,6 +223,15 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
 .arena-hazards--warning .hazard-saws strong, .arena-hazards--cutting .hazard-saws strong { color: #f6c875; }
 .arena-hazards--warning .hazard-saws > i, .arena-hazards--cutting .hazard-saws > i { background: #f6b83e; box-shadow: 0 0 9px #f6b83e68; }
 .arena-hazards--cutting { background: #352615bf; border-color: #e7a73d80; }
+.countout-notice { position: absolute; z-index: 6; top: 28%; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 13px; max-width: calc(100% - 32px); padding: 10px 17px; border: 1px solid #c2ac6670; background: #1c2114ce; color: #ecd49a; box-shadow: 0 4px 25px #0003; pointer-events: none; }
+.countout-notice--local { border-color: #e4a36d8c; background: #342619d4; }
+.countout-notice > strong { min-width: 28px; font-family: 'Barlow Condensed', Impact, sans-serif; font-size: 43px; font-weight: 600; line-height: 1; text-align: center; font-variant-numeric: tabular-nums; }
+.countout-notice > div > span { display: block; font-size: 9px; font-weight: 700; letter-spacing: 1px; white-space: nowrap; }
+.countout-notice small { display: block; margin-top: 5px; color: #beb28d; font-size: 6px; letter-spacing: 1px; }
+.damage-notice { position: absolute; z-index: 6; bottom: 190px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 11px; max-width: min(360px, calc(100% - 32px)); padding: 10px 14px; background: #182016de; border: 1px solid #b98f5366; color: #efc48b; box-shadow: 0 4px 22px #0004; pointer-events: none; }
+.damage-notice > svg { flex: 0 0 auto; }
+.damage-notice strong { display: block; font-size: 9px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; }
+.damage-notice span { display: block; margin-top: 4px; color: #b4b89e; font-size: 8px; line-height: 1.5; }
 .match-utility { position: absolute; top: 135px; right: max(34px, env(safe-area-inset-right)); display: flex; gap: 8px; z-index: 12; }
 .match-utility .icon-button { background: #111816af; border-color: #7b92814d; width: 33px; height: 33px; color: #a6bba8; }
 .match-overlay { position: absolute; inset: 0; z-index: 8; display: flex; align-items: center; justify-content: center; background: #09110d66; backdrop-filter: blur(3px); padding: 110px 25px 35px; overflow: auto; }
@@ -270,8 +289,12 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
 .pulverizer-control--moving { color: #f6d18b; }
 .weapon-control { position: relative; width: 120px; height: 120px; border-radius: 50%; border: 1px solid #d4ba7990; background: #362f1ec9; color: #ecd19c; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; touch-action: manipulation; box-shadow: inset 0 0 0 7px #c4a26b0b, 0 5px 30px #0003; }
 .weapon-control--active { border-color: #ffd16e; color: #ffcd6c; background: #876027bb; box-shadow: inset 0 0 0 7px #ffc56814, 0 0 25px #e9ac352b; }
+.weapon-control--damaged { border-color: #d39b65; }
+.weapon-control--destroyed:disabled { opacity: .8; border-color: #af745b; color: #d49b7e; background: #35251fd4; box-shadow: inset 0 0 0 7px #b88d6b08; }
 .weapon-control > span { font-size: 9px; font-weight: 700; letter-spacing: 1px; }
 .weapon-control > small { font-size: 6px; letter-spacing: 1px; color: #bca77e; }
+.weapon-readout { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.weapon-readout > strong { font-size: 6px; font-weight: 700; letter-spacing: .7px; color: #eeb17e; }
 .weapon-control > kbd { position: absolute; bottom: -25px; }
 .recover-control { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; width: 76px; height: 76px; border-radius: 50%; background: #16241abe; border: 1px solid #a7bb9780; color: #c0ceaf; margin-bottom: 4px; touch-action: manipulation; }
 .recover-control > span { font-size: 6px; letter-spacing: .7px; }
@@ -379,6 +402,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .fighter-meta strong small { font-size: 6px; }
   .fighter-caption { font-size: 6px; letter-spacing: .5px; }
   .fighter-caption span:last-child { display: none; }
+  .component-condition { gap: 5px; margin-top: 6px; }
+  .wheel-chips { gap: 3px; }
+  .wheel-chip { width: 20px; height: 14px; font-size: 6px; }
+  .wheel-chip--lost::after { width: 22px; }
   .match-clock { width: 93px; }
   .match-clock strong { font-size: 36px; }
   .match-clock > span:first-child { font-size: 6px; letter-spacing: .8px; }
@@ -478,6 +505,9 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .fighter-meta > span { display: block; font-size: 21px; }
   .fighter-meta > strong { display: block; font-size: 11px; margin-top: 3px; }
   .fighter-caption { font-size: 6px; margin-top: 1px; line-height: 1.5; }
+  .wheel-group-label { display: none; }
+  .component-condition { margin-top: 6px; }
+  .wheel-chip { width: 21px; height: 14px; }
   .match-clock { width: 79px; padding: 8px 5px; }
   .match-clock strong { font-size: 31px; }
   .match-clock > span:first-child { font-size: 5px; letter-spacing: .3px; }
@@ -498,6 +528,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .weapon-control svg { width: 23px; height: 23px; }
   .weapon-control > span { font-size: 7px; }
   .weapon-control > small { font-size: 5px; }
+  .weapon-readout > strong { font-size: 5px; }
   .recover-control { width: 57px; height: 57px; gap: 5px; }
   .recover-control > span { font-size: 5px; }
   .recover-control > svg { width: 19px; height: 19px; }
@@ -512,6 +543,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .connection-notice { top: 157px; padding: 12px; gap: 10px; width: calc(100% - 30px); }
   .connection-notice strong { font-size: 10px; }
   .connection-notice span { font-size: 8px; }
+  .countout-notice { top: 27%; gap: 10px; padding: 9px 12px; }
+  .countout-notice > strong { font-size: 37px; min-width: 24px; }
+  .countout-notice > div > span { font-size: 8px; letter-spacing: .7px; }
+  .countout-notice small { font-size: 5px; letter-spacing: .7px; }
+  .damage-notice { bottom: 204px; padding: 9px 11px; gap: 8px; }
+  .damage-notice strong { font-size: 8px; }
+  .damage-notice span { font-size: 7px; }
 }
 @media (orientation: landscape) and (max-height: 600px) {
   .arena-stage--match { min-height: 0; }
@@ -520,6 +558,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .fighter-meta > span { font-size: 22px; }
   .fighter-meta strong { font-size: 12px; }
   .fighter-caption { font-size: 6px; padding-top: 4px; }
+  .component-condition { margin-top: 5px; min-height: 13px; }
+  .wheel-chip { height: 13px; width: 20px; }
   .health-track { height: 5px; margin-top: 4px; }
   .match-clock { width: 87px; padding: 4px; }
   .match-clock strong { font-size: 30px; }
@@ -564,6 +604,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .connection-notice { top: 84px; padding: 9px 13px; }
   .connection-notice strong { font-size: 10px; }
   .connection-notice span { font-size: 8px; }
+  .countout-notice { top: 31%; padding: 7px 12px; gap: 10px; }
+  .countout-notice > strong { font-size: 34px; }
+  .countout-notice > div > span { font-size: 8px; }
+  .countout-notice small { font-size: 5px; margin-top: 4px; }
+  .damage-notice { bottom: 153px; padding: 7px 11px; gap: 8px; }
+  .damage-notice strong { font-size: 8px; }
+  .damage-notice span { font-size: 7px; margin-top: 3px; }
   .modal-backdrop { align-items: flex-start; }
   .modal { margin: auto; }
 }

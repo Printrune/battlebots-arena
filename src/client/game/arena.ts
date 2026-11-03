@@ -17,12 +17,15 @@ import { makeBot, material, type BotModel } from './models';
 import { makeStage } from './stage';
 import { ArenaSound } from './sound';
 import { createArenaEnvironment } from './lighting';
+import { damagedDriveTuning } from '../../shared/damage';
+import { DebrisRenderer } from './debris';
 
 interface DisplayBot {
   model: BotModel;
   state: PlayerSnapshot | null;
   weaponBlur: Mesh;
   displayedHealth: number;
+  damageRevision: number;
 }
 
 interface Spark {
@@ -78,6 +81,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   const stage = makeStage(scene);
   const sound = new ArenaSound();
   const bots = new Map<string, DisplayBot>();
+  const debris = new DebrisRenderer(scene, (id) => bots.get(id)?.model);
   const previewId = 'preview-selected';
   const rivalId = 'preview-rival';
   let snapshot: MatchState | null = null;
@@ -111,7 +115,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   sparkMaterial.emissiveColor = new Color3(1, 0.53, 0.1);
   sparkMaterial.disableLighting = true;
   const sparks: Spark[] = [];
-  for (let n = 0; n < 26; n += 1) {
+  let sparkCursor = 0;
+  for (let n = 0; n < 52; n += 1) {
     const mesh = MeshBuilder.CreateBox(`spark-${n}`, { width: 0.035, height: 0.035, depth: 0.2 }, scene);
     mesh.material = sparkMaterial;
     mesh.isVisible = false;
@@ -123,6 +128,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     const existing = bots.get(id);
     if (existing && existing.model.botId === botId && existing.model.paint === paint) return existing;
     if (existing) {
+      debris.removeOwner(id);
       for (const mesh of existing.model.meshes) shadows.removeShadowCaster(mesh);
       existing.weaponBlur.dispose(false, true);
       existing.model.dispose();
@@ -130,7 +136,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     const model = makeBot(scene, botId, paint, id);
     model.root.position.set(0, BOTS[botId].physics.wheelRadius, 0);
     model.root.rotationQuaternion = Quaternion.Identity();
-    for (const mesh of model.meshes) shadows.addShadowCaster(mesh);
+    for (const mesh of model.meshes) if (!mesh.name.includes('damage-scar-')) shadows.addShadowCaster(mesh);
     const blurMaterial = material(scene, `${id}-weapon-sweep`, '#a6aaab');
     blurMaterial.emissiveColor = new Color3(0.28, 0.30, 0.31);
     blurMaterial.alpha = 0.10;
@@ -144,7 +150,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     weaponBlur.material = blurMaterial;
     weaponBlur.isPickable = false;
     weaponBlur.visibility = 0;
-    const display = { model, state: null, weaponBlur, displayedHealth: 100 };
+    const display = { model, state: null, weaponBlur, displayedHealth: 100, damageRevision: -1 };
     bots.set(id, display);
     return display;
   }
@@ -152,6 +158,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   function removeBot(id: string): void {
     const bot = bots.get(id);
     if (!bot) return;
+    debris.removeOwner(id);
     for (const mesh of bot.model.meshes) shadows.removeShadowCaster(mesh);
     bot.weaponBlur.dispose(false, true);
     bot.model.dispose();
@@ -172,7 +179,11 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   function burst(position: { x: number; y: number; z: number }, strength: number): void {
     shake = Math.min(0.2, 0.05 + strength * 0.004);
     sound.hit(strength);
-    for (const spark of sparks) {
+    const count = 8 + Math.round(Math.min(1.5, strength) * 12);
+    for (let n = 0; n < count; n += 1) {
+      const spark = sparks[sparkCursor];
+      sparkCursor = (sparkCursor + 1) % sparks.length;
+      if (!spark) continue;
       spark.mesh.position.set(position.x, Math.max(0.3, position.y), position.z);
       const angle = Math.random() * Math.PI * 2;
       const speed = 2.5 + Math.random() * 5;
@@ -223,6 +234,11 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   window.addEventListener('keydown', unlockAudio);
   fitResolution();
   preview();
+  // Compile the hidden impact overlay while loading, before the first real hit.
+  await Promise.all([...bots.values()].map(async ({ model }) => {
+    const scar = model.meshes.find((mesh) => mesh.name.includes('damage-scar-'));
+    if (scar?.material) await scar.material.forceCompilationAsync(scar);
+  }));
 
   engine.runRenderLoop(() => {
     if (disposed) return;
@@ -248,11 +264,12 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
           targetPosition.z += player.velocity.z * elapsed;
           if (isLocal && Math.abs(up) > 0.7 && player.position.y < definition.physics.wheelRadius + 0.35 && !player.recovering) {
             const grip = player.inverted && player.botId === 'witchdoctor' ? 0.35 : 1;
-            const desiredYawRate = input.steer * definition.turnSpeed * grip;
+            const driveTuning = damagedDriveTuning(player.botId, player.damage);
+            const desiredYawRate = (input.steer * definition.turnSpeed * driveTuning.turnScale + input.throttle * driveTuning.yawPull) * grip;
             const yawChange = Math.max(-definition.physics.angularAcceleration * elapsed,
               Math.min(definition.physics.angularAcceleration * elapsed, desiredYawRate - player.angularVelocity.y));
             predictedYaw = (player.angularVelocity.y + yawChange * 0.5) * elapsed;
-            const prediction = driveVelocity(player.yaw + predictedYaw, input.throttle, definition.speed * grip);
+            const prediction = driveVelocity(player.yaw + predictedYaw, input.throttle, definition.speed * grip * driveTuning.speedScale);
             const blendAcceleration = 1 - Math.exp(-definition.physics.acceleration * elapsed / definition.speed);
             targetPosition.x += (prediction.x - player.velocity.x) * blendAcceleration * elapsed * 0.5;
             targetPosition.z += (prediction.z - player.velocity.z) * blendAcceleration * elapsed * 0.5;
@@ -274,10 +291,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         else bot.model.weapon.rotation.y = weaponAngle;
         bot.weaponBlur.visibility = Math.max(0, Math.min(1, (player.weaponRpm / definition.weapon.maxRpm - 0.15) * 1.15));
         if (bot.model.selfRighter) bot.model.selfRighter.rotation.x = -Math.sin(player.recoveryProgress * Math.PI) * 2.6;
-        if (bot.displayedHealth !== player.health) {
-          bot.model.setDamage(1 - player.health / 100);
-          bot.displayedHealth = player.health;
-        }
+        bot.model.pulseDamage(time, dt);
         bot.model.root.setEnabled(true);
         bot.model.glow.alpha = player.connected ? 1 : 0.25;
         if (isLocal) sound.motor(player.weaponRpm / definition.weapon.maxRpm, Math.hypot(player.velocity.x, player.velocity.z) / definition.speed, player.botId === 'tombstone');
@@ -339,6 +353,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       shake *= Math.exp(-dt * 12);
     }
 
+    debris.pulse(dt, elapsed);
     scene.render();
     fpsTime += frameSeconds;
     fpsFrames += 1;
@@ -352,7 +367,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   return {
     update(next, playerId) {
       if (disposed) return;
-      if (lastRoomId !== next.roomId || next.tick < (snapshot?.tick ?? 0)) lastEventId = -1;
+      if (lastRoomId !== next.roomId || next.tick < (snapshot?.tick ?? 0)) { lastEventId = -1; debris.clear(); }
       lastRoomId = next.roomId;
       snapshot = next;
       scene.fogDensity = 0.012;
@@ -365,22 +380,30 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         const isNew = !bots.has(player.id);
         const display = ensureBot(player.id, player.botId, player.paint);
         display.state = player;
+        if (display.damageRevision !== player.damage.revision || display.displayedHealth !== player.health) {
+          display.model.setDamage(player.damage, 1 - player.health / 100);
+          display.damageRevision = player.damage.revision;
+          display.displayedHealth = player.health;
+        }
         if (isNew || next.phase.kind === 'lobby' || next.phase.kind === 'countdown') {
           display.model.root.position.set(player.position.x, player.position.y, player.position.z);
           const q = player.rotation;
           display.model.root.rotationQuaternion?.set(q.x, q.y, q.z, q.w);
         }
       }
+      debris.update(next.debris);
       for (const event of next.events) {
         if (event.id <= lastEventId) continue;
         lastEventId = event.id;
         if (event.kind === 'hit' || event.kind === 'hazard') burst(event.position, event.strength);
+        if (event.kind === 'break') burst(event.position, Math.max(1, event.strength * 1.5));
       }
     },
     setInput(next) { input = next; },
     setPreview(botId, paint) {
       if (disposed) return;
       snapshot = null;
+      debris.clear();
       stage.setState(null);
       scene.fogDensity = overview ? 0.003 : 0.012;
       localId = null;
@@ -412,6 +435,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       window.removeEventListener('keydown', unlockAudio);
       engine.stopRenderLoop();
       sound.dispose();
+      debris.clear();
       scene.dispose();
       engine.dispose();
     },

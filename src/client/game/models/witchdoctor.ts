@@ -1,4 +1,5 @@
 import { BOTS } from '../../../shared/protocol';
+import { wheelPartId } from '../../../shared/damage';
 import type { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { ModelBuilder, type Point2, type Point3 } from './geometry';
 import type { ModelMaterials } from './materials';
@@ -55,9 +56,11 @@ export function buildWitchDoctor(builder: ModelBuilder, mats: ModelMaterials): T
   builder.box('lower-armour-skid', [1.84, 0.055, 1.89], [0, -0.34, -0.13], mats.black);
   for (const side of [-1, 1]) {
     for (const z of physics.wheelZ) {
-      builder.tire(side * physics.trackWidth / 2, z, physics.wheelRadius, physics.wheelWidth, mats.rubber, mats.paint, mats.steel, mats.black);
+      const wheel = builder.tire(side * physics.trackWidth / 2, z, physics.wheelRadius, physics.wheelWidth, mats.rubber, mats.paint, mats.steel, mats.black);
+      builder.registerPart(wheelPartId('witchdoctor', side, z), wheel);
       builder.cylinder('drive-axle', 0.15, 0.46, [side * 0.85, 0, z], mats.steel, 'x');
     }
+    const armorStart = builder.checkpoint();
     // Flat center side panels sit in the gap between the four exposed tires.
     builder.box('side-sponsor-panel', [0.018, 0.33, 0.67], [side * 0.965, -0.12, 0], mats.side);
     builder.beam('side-frame-top', [side * 0.94, 0.14, -1.0], [side * 0.94, 0.14, 0.77], 0.055, 0.055, mats.purple);
@@ -75,6 +78,7 @@ export function buildWitchDoctor(builder: ModelBuilder, mats: ModelMaterials): T
       for (const fastener of builder.bolt([x, 0.07 - n * 0.05, z], 0.09, mats.gold, 'z')) fastener.rotation.y = angle;
     }
     builder.beam('front-armour-brace', [side * 0.69, -0.20, 0.56], [side * 1.22, -0.32, 0.99], 0.09, 0.08, mats.purple);
+    builder.capturePart(side < 0 ? 'armor-left' : 'armor-right', [side * 0.94, 0, 0.75], armorStart);
 
     // Tall bearing uprights surround a single broad drisc. Their open center remains visible.
     const bearingOutline: Point2[] = [[-0.22, 0.58], [0.78, 0.77], [0.99, 0.87], [1.00, 0.96], [0.86, 1.04], [-0.18, 1.43]];
@@ -102,8 +106,10 @@ export function buildWitchDoctor(builder: ModelBuilder, mats: ModelMaterials): T
     }
   }
 
+  const rearStart = builder.checkpoint();
   builder.box('rear-green-sponsor-plate', [1.78, 0.33, 0.045], [0, -0.13, -1.10], mats.rear);
   for (const x of [-0.77, -0.4, 0.4, 0.77]) builder.bolt([x, -0.11, -1.13], 0.07, mats.gold, 'z');
+  builder.capturePart('armor-rear', [0, -0.13, -1.10], rearStart);
   // Glimpses of actual mechanical internals through the center split and wheel gaps.
   for (const x of [-0.45, 0.45]) {
     builder.cylinder('drive-motor', 0.27, 0.53, [x, 0.05, -0.21], mats.steel, 'z', root, 24);
@@ -133,6 +139,7 @@ export function buildWitchDoctor(builder: ModelBuilder, mats: ModelMaterials): T
   }
 
   const selfRighter = builder.pivot('ribcage-self-righter', [0, 0.08, -0.90]);
+  builder.registerPart('armor-top', selfRighter);
   ribCover(builder, mats, -1, selfRighter);
   ribCover(builder, mats, 1, selfRighter);
   // The center spine is a separate scalloped plate bridging the two curved lids.

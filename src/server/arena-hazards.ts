@@ -23,8 +23,9 @@ export interface HazardRobot { id: string; slot: 0 | 1; physics: RobotPhysics }
 export interface HazardHit {
   hazardId: string; robotId: string; ownerSlot: 0 | 1 | null;
   damage: number; position: Vector; strength: number;
+  normal: Vector; colliderHandle: number;
 }
-interface Contact { point: Vector; normal: Vector }
+interface Contact { point: Vector; normal: Vector; colliderHandle: number }
 interface Screw {
   definition: ScrewDefinition; collider: Collider;
   angle: number; direction: 1 | -1; jamSeconds: number; reverseUntil: number;
@@ -75,14 +76,14 @@ function contactRobot(robot: HazardRobot, shape: Shape, position: Vector, rotati
   if (!near(robot, position, radius + length(travel) + 0.03)) return null;
   for (const collider of robot.physics.colliders) {
     const contact = collider.contactShape(shape, position, rotation, 0.015);
-    if (contact && contact.distance <= 0.015) return { point: { ...contact.point1 }, normal: scale(contact.normal1, -1) };
+    if (contact && contact.distance <= 0.015) return { point: { ...contact.point1 }, normal: scale(contact.normal1, -1), colliderHandle: collider.handle };
     if (length(travel) > 0.025) {
       const cast = collider.castShape(ZERO, shape, previous, previousRotation, scale(travel, 1 / dt), 0.01, dt, true);
       if (cast) {
         const local = rotate(collider.rotation(), cast.witness1);
         const origin = collider.translation();
         return { point: { x: origin.x + local.x, y: origin.y + local.y, z: origin.z + local.z },
-          normal: scale(rotate(collider.rotation(), cast.normal1), -1) };
+          normal: scale(rotate(collider.rotation(), cast.normal1), -1), colliderHandle: collider.handle };
       }
     }
   }
@@ -171,7 +172,7 @@ export class ArenaHazards {
       let contact: Contact | null = null;
       for (const collider of robot.physics.colliders) {
         const actual = screw.collider.contactCollider(collider, 0.025);
-        if (actual && actual.distance <= 0.025) { contact = { point: { ...actual.point2 }, normal: { ...actual.normal1 } }; break; }
+        if (actual && actual.distance <= 0.025) { contact = { point: { ...actual.point2 }, normal: { ...actual.normal1 }, colliderHandle: collider.handle }; break; }
       }
       if (!contact) continue;
       const velocity = robot.physics.body.linvel();
@@ -201,7 +202,7 @@ export class ArenaHazards {
         z: axis.z * mass * 0.13 * screw.direction }, true);
       robot.physics.absorbHit();
       hits.push({ hazardId: screw.definition.id, robotId: robot.id, ownerSlot: null, damage: 1.5,
-        position: contact.point, strength: 0.25 });
+        position: contact.point, strength: 0.25, normal: scale(contact.normal, -1), colliderHandle: contact.colliderHandle });
     }
     screw.jamSeconds = jammed && this.elapsed >= screw.reverseUntil ? screw.jamSeconds + dt : 0;
     if (screw.jamSeconds >= 1.15) {
@@ -239,7 +240,7 @@ export class ArenaHazards {
           y: -mass * 2.0, z: Math.cos(hammer.definition.yaw) * mass * 0.45 }, contact.point, true);
         robot.physics.absorbHit();
         hits.push({ hazardId: hammer.definition.id, robotId: robot.id, ownerSlot: hammer.definition.ownerSlot,
-          damage: 7, position: contact.point, strength: 0.6 });
+          damage: 7, position: contact.point, strength: 0.6, normal: scale(contact.normal, -1), colliderHandle: contact.colliderHandle });
       }
     }
     hammer.previous = position;
@@ -285,7 +286,7 @@ export class ArenaHazards {
         z: contact.normal.z * mass * 0.25 }, contact.point, true);
       robot.physics.absorbHit();
       hits.push({ hazardId: saw.definition.id, robotId: robot.id, ownerSlot: null,
-        damage: 3.5, position: contact.point, strength: 0.35 });
+        damage: 3.5, position: contact.point, strength: 0.35, normal: scale(contact.normal, -1), colliderHandle: contact.colliderHandle });
     }
   }
 

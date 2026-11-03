@@ -8,6 +8,10 @@ import type {
 } from '../shared/protocol';
 import { ArenaHazards } from './arena-hazards';
 import type { HazardHit, HazardRobot } from './arena-hazards';
+import { damagedDriveTuning, damageParts, driveCondition, partIntegrity, wheelPartId, IMMOBILIZATION_SECONDS } from '../shared/damage';
+import type { DamagePartId } from '../shared/damage';
+import { ComponentDamage, DebrisSystem } from './damage';
+import type { DetachedFragment } from './damage';
 
 type Body = InstanceType<typeof RAPIER.RigidBody>;
 type Collider = InstanceType<typeof RAPIER.Collider>;
@@ -42,6 +46,7 @@ export interface WeaponContact {
   normal: Vector;
   tangent: Vector;
   leverage: number;
+  colliderHandle: number;
 }
 
 interface PendingHit {
@@ -96,6 +101,11 @@ export class RobotPhysics {
   readonly colliders: Collider[] = [];
   readonly wheelPositions: Vector[] = [];
   readonly boundingRadius: number;
+  readonly damage: ComponentDamage;
+  private readonly componentColliders = new Map<number, DamagePartId>();
+  private readonly allColliders: Collider[] = [];
+  private readonly wheels: { id: DamagePartId; collider: Collider; position: Vector }[] = [];
+  private readonly armorColliders = new Map<DamagePartId, Collider[]>();
   private readonly weaponCollider: Collider;
   private readonly sweepShape: InstanceType<typeof RAPIER.Cylinder>;
   private previousMount: Vector;
@@ -121,6 +131,7 @@ export class RobotPhysics {
     yaw: number,
   ) {
     const physical = definition.physics;
+    this.damage = new ComponentDamage(definition.id);
     this.body = world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic().setTranslation(position.x, position.y, position.z)
         .setRotation(uprightRotation(yaw)).setLinearDamping(0.12).setAngularDamping(1.35)
@@ -134,21 +145,29 @@ export class RobotPhysics {
       for (const side of [-1, 1]) {
         const offset = { x: side * physical.trackWidth / 2, y: 0, z };
         this.wheelPositions.push(offset);
-        this.colliders.push(world.createCollider(
+        const collider = world.createCollider(
           RAPIER.ColliderDesc.cylinder(physical.wheelWidth / 2, physical.wheelRadius)
             .setRotation(AXLE_ROTATION).setTranslation(offset.x, offset.y, offset.z)
             .setMass(physical.mass * 0.15 / (physical.wheelZ.length * 2))
             .setFriction(0.025).setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min).setRestitution(0.03),
           this.body,
-        ));
+        );
+        this.colliders.push(collider);
+        const id = wheelPartId(definition.id, offset.x, offset.z);
+        this.componentColliders.set(collider.handle, id);
+        this.wheels.push({ id, collider, position: offset });
       }
     }
     if (definition.weapon.kind === 'vertical-disc') {
       for (const side of [-1, 1]) {
-        this.colliders.push(world.createCollider(
+        const plow = world.createCollider(
           RAPIER.ColliderDesc.cuboid(0.13, 0.10, 0.46).setTranslation(side * 1.33, -0.29, 1.30)
             .setMass(physical.mass * 0.015).setFriction(0.25), this.body,
-        ));
+        );
+        this.colliders.push(plow);
+        const armor: DamagePartId = side < 0 ? 'armor-left' : 'armor-right';
+        this.componentColliders.set(plow.handle, armor);
+        this.armorColliders.set(armor, [plow]);
         // Sloping rib/bunny-ear supports leave rear tires available when inverted.
         const vertices = new Float32Array([
           side * 0.38 - 0.08, 0.12, -0.82, side * 0.38 + 0.08, 0.12, -0.82,
@@ -185,6 +204,8 @@ export class RobotPhysics {
       this.body,
     );
     this.colliders.push(this.weaponCollider);
+    this.componentColliders.set(this.weaponCollider.handle, 'weapon');
+    this.allColliders.push(...this.colliders);
     this.sweepShape = new RAPIER.Cylinder(weapon.halfWidth, weapon.radius);
     // A rotation-independent sphere includes the entire assembly, not just its
     // chassis. The support bounds use the same plow/rib/boom vertices above.
@@ -215,6 +236,7 @@ export class RobotPhysics {
     return multiply(this.body.rotation(), this.definition.weapon.kind === 'vertical-disc' ? AXLE_ROTATION : IDENTITY);
   }
   get canStrike(): boolean { return this.weaponCharge >= 0.18 && this.weaponCooldown <= 0; }
+  get weaponColliderHandle(): number { return this.weaponCollider.handle; }
 
   couldContact(other: RobotPhysics): boolean {
     const position = this.body.translation();
@@ -269,7 +291,13 @@ export class RobotPhysics {
     this.hitStun = Math.max(0, this.hitStun - dt);
     const weapon = this.definition.weapon;
     const previousCharge = this.weaponCharge;
-    this.weaponCharge = clamp(this.weaponCharge + dt * (input.weapon ? 1 / weapon.spinUpSeconds : -1 / weapon.coastDownSeconds), 0, 1);
+    const integrity = partIntegrity(this.damage.state, 'weapon');
+    const motor = input.weapon && integrity > 0;
+    const spinUp = weapon.spinUpSeconds * (1 + Math.max(0, 0.5 - integrity) * 3);
+    const desiredCharge = motor ? integrity < 0.35 ? 0.65 + integrity : 1 : 0;
+    const spinChange = this.weaponCharge < desiredCharge - 0.00001 ? 1 / spinUp
+      : this.weaponCharge > desiredCharge + 0.00001 ? -1 / weapon.coastDownSeconds : 0;
+    this.weaponCharge = clamp(this.weaponCharge + dt * spinChange, 0, Math.max(desiredCharge, this.weaponCharge));
     this.weaponAngle = (this.weaponAngle + this.weaponRpm * Math.PI / 30 * dt * weapon.spinDirection) % (Math.PI * 2);
     if (weapon.kind === 'horizontal-bar') {
       this.weaponCollider.setSensor(this.weaponCharge > 0.1);
@@ -321,16 +349,23 @@ export class RobotPhysics {
     const physical = this.definition.physics;
     const rotation = this.body.rotation();
     const position = this.body.translation();
-    const contacts = this.wheelPositions.filter((wheel) => {
-      const point = add(position, rotate(rotation, wheel));
+    let contactTraction = 0;
+    for (const wheel of this.wheels) {
+      const integrity = partIntegrity(this.damage.state, wheel.id);
+      if (integrity <= 0) continue;
+      const point = add(position, rotate(rotation, wheel.position));
       const deck = ARENA.upperDeck;
       const supportedByDeck = Math.abs(point.x - deck.x) <= deck.width / 2 &&
         Math.abs(point.z - deck.z) <= deck.depth / 2 && point.y > deck.height;
       const supportHeight = supportedByDeck ? deck.height : 0;
-      return point.y >= supportHeight - 0.05 && point.y - physical.wheelRadius - supportHeight < 0.14;
-    }).length;
+      if (point.y >= supportHeight - 0.05 && point.y - physical.wheelRadius - supportHeight < 0.14) {
+        contactTraction += 0.62 + Math.min(1, integrity / 0.65) * 0.38;
+      }
+    }
     const driveOrientation = this.alignment > 0.28 || (physical.invertible && this.alignment < -0.28);
-    const fraction = driveOrientation ? contacts / this.wheelPositions.length : 0;
+    const fraction = driveOrientation ? contactTraction / this.wheelPositions.length : 0;
+    const condition = driveCondition(this.definition.id, this.damage.state);
+    const handling = damagedDriveTuning(this.definition.id, this.damage.state);
     const invertedFactor = this.inverted && physical.selfRight ? 0.58 : 1;
     const throttle = this.hitStun > 0 || this.recovering ? 0 : input.throttle;
     const steering = this.hitStun > 0 || this.recovering ? 0 : input.steer;
@@ -339,8 +374,8 @@ export class RobotPhysics {
     const gyroSteering = this.definition.weapon.kind === 'vertical-disc'
       ? 1 / (1 + this.definition.weapon.gyroStrength * this.weaponCharge * this.weaponCharge * 0.65)
       : 1;
-    const targetYawRate = steering * this.definition.turnSpeed * invertedFactor * gyroSteering;
-    const targetSpeed = throttle * this.definition.speed * invertedFactor;
+    const targetYawRate = steering * this.definition.turnSpeed * invertedFactor * gyroSteering * handling.turnScale + throttle * handling.yawPull;
+    const targetSpeed = throttle * this.definition.speed * invertedFactor * handling.speedScale;
     const velocity = this.body.linvel();
     const currentForward = dot(velocity, forward);
     const currentLateral = dot(velocity, right);
@@ -360,8 +395,8 @@ export class RobotPhysics {
       this.body.applyTorqueImpulse({ x: 0, y: yawChange * inertia * fraction, z: 0 }, true);
     }
     const inversion = this.inverted ? -1 : 1;
-    this.wheelSpeedLeft = -(targetSpeed + targetYawRate * physical.trackWidth / 2) / physical.wheelRadius * inversion;
-    this.wheelSpeedRight = -(targetSpeed - targetYawRate * physical.trackWidth / 2) / physical.wheelRadius * inversion;
+    this.wheelSpeedLeft = condition.left > 0 ? -(targetSpeed + targetYawRate * physical.trackWidth / 2) / physical.wheelRadius * inversion : 0;
+    this.wheelSpeedRight = condition.right > 0 ? -(targetSpeed - targetYawRate * physical.trackWidth / 2) / physical.wheelRadius * inversion : 0;
   }
 
   contactWith(collider: Collider): WeaponContact | null {
@@ -392,6 +427,7 @@ export class RobotPhysics {
     return {
       point, normal: normalize(normal), tangent: normalize(cross(axis, radial)),
       leverage: clamp(magnitude(radial) / this.definition.weapon.radius, 0.25, 1),
+      colliderHandle: collider.handle,
     };
   }
 
@@ -403,7 +439,99 @@ export class RobotPhysics {
 
   absorbHit(): void { this.hitStun = 0.16; }
 
+  damageAtContact(amount: number, point: Vector, normal: Vector, colliderHandle?: number): DetachedFragment | null {
+    const rotation = this.body.rotation();
+    const inverse = { x: -rotation.x, y: -rotation.y, z: -rotation.z, w: rotation.w };
+    const localPoint = rotate(inverse, subtract(point, this.body.translation()));
+    const localNormal = normalize(rotate(inverse, normal), { x: 0, y: 1, z: 0 });
+    const explicit = colliderHandle === undefined ? undefined : this.componentColliders.get(colliderHandle);
+    const partId = explicit ?? this.partAt(localPoint);
+    const broke = this.damage.impact(partId, amount, localPoint, localNormal);
+    const definition = damageParts(this.definition.id).find((part) => part.id === partId);
+    if (!broke || !definition?.detachable) return null;
+    let fragment: DetachedFragment;
+    const wheel = this.wheels.find((item) => item.id === partId);
+    let localOrigin: Vector;
+    if (wheel) {
+      this.disableCollider(wheel.collider);
+      localOrigin = { ...wheel.position };
+      fragment = { kind: 'wheel', partId, localOrigin, position: ZERO, rotation,
+        velocity: ZERO, angularVelocity: ZERO, mass: Math.min(7.5, this.definition.physics.mass * 0.15 / this.wheels.length),
+        radius: this.definition.physics.wheelRadius, width: this.definition.physics.wheelWidth };
+    } else {
+      for (const collider of this.armorColliders.get(partId) ?? []) this.disableCollider(collider);
+      const physical = this.definition.physics;
+      const left = partId === 'armor-left';
+      localOrigin = partId === 'armor-rear'
+        ? { x: 0, y: physical.chassisOffset.y, z: physical.chassisOffset.z - physical.halfExtents.z }
+        : partId === 'armor-top'
+          ? { x: 0, y: physical.chassisOffset.y + physical.halfExtents.y, z: physical.chassisOffset.z }
+          : this.definition.id === 'witchdoctor'
+            ? { x: left ? -1.33 : 1.33, y: -0.29, z: 1.30 }
+            : { x: (left ? -1 : 1) * physical.halfExtents.x, y: physical.chassisOffset.y, z: physical.chassisOffset.z };
+      const halfExtents = partId === 'armor-top' ? { x: physical.halfExtents.x * 0.85, y: 0.045, z: physical.halfExtents.z * 0.85 }
+        : partId === 'armor-rear' ? { x: physical.halfExtents.x * 0.8, y: 0.19, z: 0.045 }
+          : { x: 0.055, y: 0.20, z: this.definition.id === 'witchdoctor' ? 0.46 : 0.55 };
+      fragment = { kind: 'panel', partId, localOrigin, halfExtents, position: ZERO, rotation,
+        velocity: ZERO, angularVelocity: ZERO, mass: 2.4 };
+    }
+    const offset = rotate(rotation, localOrigin);
+    fragment.position = add(add(this.body.translation(), offset), scale(normalize(normal), 0.10));
+    fragment.rotation = { ...rotation };
+    fragment.velocity = add(add(this.body.linvel(), cross(this.body.angvel(), offset)),
+      add(scale(normalize(normal), 1.8), { x: 0, y: 1.1, z: 0 }));
+    const spin = wheel ? (wheel.position.x < 0 ? this.wheelSpeedLeft : this.wheelSpeedRight) : localNormal.z * 4;
+    fragment.angularVelocity = add(this.body.angvel(), rotate(rotation, { x: spin, y: wheel ? 0 : 2.5, z: wheel ? 0 : -localNormal.x * 4 }));
+    return fragment;
+  }
+
+  private disableCollider(collider: Collider): void {
+    collider.setEnabled(false);
+    const index = this.colliders.indexOf(collider);
+    if (index !== -1) this.colliders.splice(index, 1);
+  }
+
+  private partAt(point: Vector): DamagePartId {
+    for (const wheel of this.wheels) {
+      if (partIntegrity(this.damage.state, wheel.id) <= 0) continue;
+      if (Math.abs(point.x - wheel.position.x) <= this.definition.physics.wheelWidth / 2 + 0.16 &&
+        Math.hypot(point.y - wheel.position.y, point.z - wheel.position.z) <= this.definition.physics.wheelRadius + 0.12) return wheel.id;
+    }
+    const weapon = this.definition.weapon;
+    const radial = subtract(point, weapon.mount);
+    const onWeapon = weapon.kind === 'vertical-disc'
+      ? Math.abs(radial.x) <= weapon.halfWidth + 0.10 && Math.hypot(radial.y, radial.z) <= weapon.radius + 0.1
+      : Math.abs(radial.y) <= weapon.halfWidth + 0.10 && Math.hypot(radial.x, radial.z) <= weapon.radius + 0.1;
+    if (onWeapon) return 'weapon';
+    const physical = this.definition.physics;
+    if (point.y > physical.chassisOffset.y + physical.halfExtents.y * 0.65 && Math.abs(point.x) < physical.halfExtents.x * 0.8) return 'armor-top';
+    if (point.z < physical.chassisOffset.z - physical.halfExtents.z * 0.6) return 'armor-rear';
+    return point.x < 0 ? 'armor-left' : 'armor-right';
+  }
+
+  updateImmobilization(dt: number): boolean {
+    const condition = driveCondition(this.definition.id, this.damage.state);
+    const position = this.body.translation();
+    const velocity = this.body.linvel();
+    const deck = ARENA.upperDeck;
+    const support = Math.abs(position.x - deck.x) < deck.width / 2 && Math.abs(position.z - deck.z) < deck.depth / 2 ? deck.height : 0;
+    const grounded = position.y < support + this.definition.physics.wheelRadius + 0.35 && Math.abs(velocity.y) < 0.65;
+    const stationary = Math.hypot(velocity.x, velocity.z) < 0.7;
+    if (condition.wheels === 0 && grounded && stationary && !this.recovering) {
+      this.damage.immobilization(this.damage.state.immobilizedFor + dt);
+    } else this.damage.immobilization(0);
+    return this.damage.state.immobilizedFor >= IMMOBILIZATION_SECONDS - 0.00001;
+  }
+
   reset(position: Vector, yaw: number): void {
+    this.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+    this.damage.reset();
+    for (const collider of this.allColliders) collider.setEnabled(true);
+    this.colliders.splice(0, this.colliders.length, ...this.allColliders);
+    if (this.definition.weapon.kind === 'horizontal-bar') {
+      this.weaponCollider.setSensor(false);
+      this.weaponCollider.setRotationWrtParent(IDENTITY);
+    }
     this.body.setTranslation(position, true);
     this.body.setRotation(uprightRotation(yaw), true);
     this.body.setLinvel(ZERO, true);
@@ -429,6 +557,7 @@ export class Simulation {
   private readonly players = new Map<string, Participant>();
   private readonly arenaColliders: { collider: Collider; boundary: ArenaBoundary }[] = [];
   private readonly hazards: ArenaHazards;
+  private readonly debris: DebrisSystem;
   private phase: MatchPhase = { kind: 'lobby' };
   private tick = 0;
   private eventId = 0;
@@ -453,6 +582,7 @@ export class Simulation {
       ), boundary: wall.boundary });
     }
     this.hazards = new ArenaHazards(this.world);
+    this.debris = new DebrisSystem(this.world);
   }
 
   addPlayer(id: string, name: string, selection: CosmeticSelection): void {
@@ -511,7 +641,14 @@ export class Simulation {
   step(dt: number, nowMs: number): void {
     if (this.disposed) return;
     this.tick += 1;
-    if (this.phase.kind === 'finished') return;
+    if (this.phase.kind === 'finished') {
+      if (this.debris.size > 0) {
+        this.world.timestep = dt / 2;
+        this.world.step(); this.world.step();
+        this.debris.step(dt);
+      }
+      return;
+    }
     if (this.phase.kind === 'countdown') {
       const seconds = this.phase.seconds - dt;
       this.phase = seconds <= 0.00001 ? { kind: 'fighting', seconds: MATCH_SECONDS } : { kind: 'countdown', seconds };
@@ -546,8 +683,11 @@ export class Simulation {
         id: player.id, slot: player.spawnSlot, physics: player.physics,
       }));
       for (const hit of this.hazards.step(dt / 2, elapsedBefore + (substep + 1) * dt / 2, robots)) this.applyHazardHit(hit);
+      for (const player of this.players.values()) player.physics.updateImmobilization(dt / 2);
+      this.debris.step(dt / 2);
     }
-    const survivors = [...this.players.values()].filter((player) => player.health > 0);
+    const survivors = [...this.players.values()].filter((player) => player.health > 0 &&
+      player.physics.damage.state.immobilizedFor < IMMOBILIZATION_SECONDS - 0.00001);
     if (survivors.length < this.players.size) {
       this.finish({ winnerId: survivors.length === 1 ? survivors[0]?.id ?? null : null, reason: survivors.length === 0 ? 'draw' : 'knockout' });
       return;
@@ -621,6 +761,7 @@ export class Simulation {
     target.physics.body.applyImpulseAtPoint(impulse, contact.point, true);
     // The spinner transfers momentum both ways, including its characteristic recoil.
     attacker.physics.body.applyImpulseAtPoint(scale(impulse, -0.48), attacker.physics.weaponMount, true);
+    this.localizeDamage(target, damage, contact.point, contact.normal, contact.colliderHandle);
     attacker.physics.spendWeaponEnergy(contact.leverage);
     this.addEvent({ kind: 'hit', sourceId: attacker.id, targetId: target.id,
       position: { ...contact.point }, strength: clamp(energy * contact.leverage, 0.1, 1) });
@@ -651,6 +792,9 @@ export class Simulation {
       player.physics.body.mass() * Math.min(3.5, 3.2 * energy * contact.leverage));
     player.physics.body.applyImpulseAtPoint(impulse, player.physics.weaponMount, true);
     player.physics.spendWeaponEnergy(contact.leverage);
+    const selfDamage = energy * 1.2;
+    player.health = Math.max(0, player.health - selfDamage);
+    this.localizeDamage(player, selfDamage, contact.point, scale(contact.normal, -1), player.physics.weaponColliderHandle);
     this.addEvent({ kind: 'hit', sourceId: player.id, targetId: 'arena', position: contact.point,
       strength: clamp(energy * contact.leverage, 0.1, 1) });
   }
@@ -660,9 +804,17 @@ export class Simulation {
     if (!player || player.health <= 0) return;
     const delivered = Math.min(hit.damage, player.health);
     player.health = Math.max(0, player.health - hit.damage);
+    this.localizeDamage(player, hit.damage, hit.position, hit.normal, hit.colliderHandle);
     const owner = hit.ownerSlot === null ? undefined : [...this.players.values()].find((item) => item.spawnSlot === hit.ownerSlot);
     if (owner && owner.id !== player.id) owner.damageDealt += delivered;
     this.addEvent({ kind: 'hazard', sourceId: hit.hazardId, targetId: player.id, position: hit.position, strength: hit.strength });
+  }
+
+  private localizeDamage(player: Participant, amount: number, point: Vector, normal: Vector, colliderHandle?: number): void {
+    const fragment = player.physics.damageAtContact(amount, point, normal, colliderHandle);
+    if (!fragment) return;
+    this.debris.spawn(player.id, player.selection.botId, fragment);
+    this.addEvent({ kind: 'break', sourceId: player.id, targetId: player.id, position: fragment.position, strength: 0.8 });
   }
 
   private addEvent(event: Omit<MatchEvent, 'id'>): void {
@@ -681,6 +833,7 @@ export class Simulation {
       player.physics.wheelSpeedRight = 0;
       player.physics.body.setLinvel(ZERO, true);
       player.physics.body.setAngvel(ZERO, true);
+      player.physics.body.setBodyType(RAPIER.RigidBodyType.Fixed, true);
     }
   }
   forfeit(id: string): void {
@@ -693,6 +846,7 @@ export class Simulation {
     this.phase = { kind: 'lobby' };
     this.events = [];
     this.hazards.reset();
+    this.debris.clear();
     for (const player of this.players.values()) {
       const physical = player.physics.definition.physics;
       player.physics.reset({ x: 0, y: physical.wheelRadius + 0.03, z: player.spawnSlot === 0 ? -ARENA.spawnZ : ARENA.spawnZ }, player.spawnSlot === 0 ? 0 : Math.PI);
@@ -720,14 +874,17 @@ export class Simulation {
         wheelSpeedLeft: player.physics.wheelSpeedLeft, wheelSpeedRight: player.physics.wheelSpeedRight,
         connected: player.connected, ready: player.ready, lastInputSeq: player.lastInputSeq,
         damageDealt: player.damageDealt, hits: player.hits,
+        damage: player.physics.damage.snapshot(),
       })),
       events: this.events.map((event) => ({ ...event, position: { ...event.position } })),
       arena: this.hazards.snapshot(),
+      debris: this.debris.snapshot(),
     };
   }
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.debris.clear();
     this.players.clear();
     this.world.free();
   }

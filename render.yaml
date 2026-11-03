@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: battlebots-arena
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    startCommand: pnpm start
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 24
+      - key: MAX_ROOMS
+        value: 4
+      - key: DEMO_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true

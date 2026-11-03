@@ -1,0 +1,381 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { FormEvent, ReactNode } from 'react';
+import { z } from 'zod';
+import { BOTS, NEUTRAL_INPUT, PAINTS, paintColor } from '../shared/protocol';
+import type { ArenaRenderer, BotId, JoinOptions, MatchState, PaintId, PlayerInput, PlayerSnapshot } from '../shared/protocol';
+import { createConnection } from './network';
+import type { ConnectionStatus } from './network';
+import { BotSilhouette, Icon } from './components/Icon';
+import { Joystick } from './components/Joystick';
+
+const sessionSchema = z.object({ authenticated: z.boolean(), passwordRequired: z.boolean() });
+const errorSchema = z.object({ error: z.string() });
+type Authentication = 'checking' | 'required' | 'authenticated' | 'failed';
+
+function storedName(): string {
+  try { return localStorage.getItem('battlebots:driver') || 'Driver'; } catch { return 'Driver'; }
+}
+
+function initialRoom(): string { return new URLSearchParams(window.location.search).get('room') ?? ''; }
+
+function roomFromInput(value: string): string {
+  try { return new URL(value).searchParams.get('room') ?? value.trim(); } catch { return value.trim(); }
+}
+
+function formatTime(seconds: number): string {
+  const rounded = Math.max(0, Math.ceil(seconds));
+  return `${Math.floor(rounded / 60).toString().padStart(2, '0')}:${(rounded % 60).toString().padStart(2, '0')}`;
+}
+
+function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose?: () => void }) {
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    container.current?.querySelector<HTMLElement>('input, button')?.focus();
+    return () => { if (previous instanceof HTMLElement) previous.focus(); };
+  }, []);
+  return <div className="modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose?.(); }}>
+    <div className="modal" role="dialog" aria-modal="true" aria-label={title} ref={container} onKeyDown={(event) => {
+      if (event.key === 'Escape') onClose?.();
+      if (event.key !== 'Tab') return;
+      const items = container.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), a[href]');
+      if (!items?.length) return;
+      const first = items[0]; const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }}>
+      <div className="modal-top"><span className="eyebrow">BATTLEBOTS / ARENA</span>{onClose ? <button className="icon-button" onClick={onClose} aria-label="Close"><Icon name="close" /></button> : null}</div>
+      <h2>{title}</h2>
+      {children}
+    </div>
+  </div>;
+}
+
+function HealthBar({ player, local = false }: { player: PlayerSnapshot | undefined; local?: boolean }) {
+  return <div className={`fighter-hud ${local ? 'fighter-hud--local' : ''}`}>
+    <div className="fighter-meta"><span>{player ? BOTS[player.botId].name : 'Awaiting challenger'}</span><strong>{player ? Math.ceil(player.health) : '—'}<small> HP</small></strong></div>
+    <div className="health-track"><div style={{ width: `${player?.health ?? 0}%`, background: player ? paintColor(player.botId, player.paint) : undefined }} /></div>
+    <div className="fighter-caption"><span>{local ? 'YOU' : 'OPPONENT'} · {player?.name ?? 'OPEN SEAT'}</span><span>{player && !player.connected ? 'RECONNECTING' : player?.weaponActive ? 'WEAPON LIVE' : 'WEAPON STANDBY'}</span></div>
+  </div>;
+}
+
+export function App() {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const renderer = useRef<ArenaRenderer | null>(null);
+  const connection = useRef<ReturnType<typeof createConnection> | null>(null);
+  const currentSnapshot = useRef<MatchState | null>(null);
+  const localPlayerId = useRef<string | null>(null);
+  const activeRoom = useRef(false);
+  const acceptSnapshots = useRef(false);
+  const input = useRef({ ...NEUTRAL_INPUT });
+  const sequence = useRef(0);
+  const keys = useRef(new Set<string>());
+  const recoveryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [botId, setBotId] = useState<BotId>('witchdoctor');
+  const [paint, setPaint] = useState<PaintId>('signature');
+  const [driverName, setDriverName] = useState(storedName);
+  const [snapshot, setSnapshot] = useState<MatchState | null>(null);
+  const [myId, setMyId] = useState<string | null>(null);
+  const [inRoom, setInRoom] = useState(false);
+  const [roomId, setRoomId] = useState('');
+  const [status, setStatus] = useState<ConnectionStatus>('idle');
+  const [authentication, setAuthentication] = useState<Authentication>('checking');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [rendererReady, setRendererReady] = useState(false);
+  const [rendererError, setRendererError] = useState('');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
+  const [joinCode, setJoinCode] = useState(initialRoom);
+  const [copied, setCopied] = useState(false);
+  const [muted, setMuted] = useState(true);
+  const [weaponOn, setWeaponOn] = useState(false);
+  const [rematchPending, setRematchPending] = useState(false);
+  const [opponentDirection, setOpponentDirection] = useState<string | null>(null);
+
+  const selectedBot = BOTS[botId];
+  const local = snapshot?.players.find((player) => player.id === myId);
+  const opponent = snapshot?.players.find((player) => player.id !== myId);
+  const phase = snapshot?.phase;
+  const fighting = phase?.kind === 'fighting';
+  const inviteUrl = roomId ? `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}` : '';
+
+  const resetInput = useCallback(() => {
+    keys.current.clear();
+    input.current = { ...NEUTRAL_INPUT, seq: sequence.current };
+    setWeaponOn(false);
+    renderer.current?.setInput(input.current);
+    connection.current?.sendInput({ ...input.current, seq: ++sequence.current });
+  }, []);
+
+  useEffect(() => {
+    const client = createConnection({
+      onState: (state, id) => {
+        if (!acceptSnapshots.current) return;
+        currentSnapshot.current = state;
+        localPlayerId.current = id;
+        sequence.current = Math.max(sequence.current, state.players.find((player) => player.id === id)?.lastInputSeq ?? 0);
+        activeRoom.current = true;
+        renderer.current?.update(state, id);
+        setSnapshot(state); setMyId(id); setRoomId(state.roomId); setInRoom(true);
+      },
+      onStatus: setStatus,
+      onError: (message) => setError(message),
+    });
+    connection.current = client;
+    return () => { connection.current = null; void client.leave(); };
+  }, []);
+
+  useEffect(() => {
+    if (!canvas.current) return;
+    const element = canvas.current;
+    let cancelled = false;
+    let instance: ArenaRenderer | null = null;
+    void import('./game/arena').then(({ createArena }) => createArena(element)).then((result) => {
+      if (cancelled) { result.dispose(); return; }
+      instance = result;
+      renderer.current = result;
+      result.setPreview('witchdoctor', 'signature');
+      result.setMuted(true);
+      if (activeRoom.current && currentSnapshot.current) result.update(currentSnapshot.current, localPlayerId.current);
+      setRendererReady(true);
+    }).catch((cause: unknown) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      console.error({ event: 'arena_start_failed', message });
+      if (!cancelled) setRendererError(message);
+    });
+    return () => { cancelled = true; instance?.dispose(); renderer.current = null; };
+  }, []);
+
+  useEffect(() => {
+    if (!inRoom && rendererReady) renderer.current?.setPreview(botId, paint);
+  }, [botId, paint, inRoom, rendererReady]);
+
+  useEffect(() => { renderer.current?.setMuted(muted); }, [muted, rendererReady]);
+
+  const checkSession = useCallback(async () => {
+    setAuthentication('checking'); setAuthError('');
+    try {
+      const response = await fetch('/api/session', { credentials: 'same-origin' });
+      if (!response.ok) throw new Error('The arena server is starting. Try again in a moment.');
+      const session = sessionSchema.parse(await response.json());
+      setAuthentication(session.authenticated ? 'authenticated' : 'required');
+    } catch (cause: unknown) {
+      setAuthentication('failed');
+      setAuthError(cause instanceof Error ? cause.message : 'Could not reach the arena server.');
+    }
+  }, []);
+
+  useEffect(() => { void checkSession(); }, [checkSession]);
+
+  useEffect(() => {
+    if (authentication !== 'authenticated') return;
+    let cancelled = false;
+    acceptSnapshots.current = true;
+    void connection.current?.reconnect().then((found) => {
+      if (cancelled || activeRoom.current) return;
+      if (!found) {
+        acceptSnapshots.current = false;
+        if (initialRoom()) setJoinOpen(true);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [authentication]);
+
+  useEffect(() => {
+    if (!inRoom) return;
+    const interval = setInterval(() => {
+      const canDrive = currentSnapshot.current?.phase.kind === 'fighting' && document.visibilityState === 'visible';
+      const packet: PlayerInput = { ...(canDrive ? input.current : NEUTRAL_INPUT), seq: ++sequence.current };
+      renderer.current?.setInput(packet);
+      connection.current?.sendInput(packet);
+    }, 1000 / 30);
+    const directionInterval = setInterval(() => {
+      const direction = canvas.current?.dataset.opponentDirection;
+      setOpponentDirection(direction === 'left' || direction === 'right' ? direction : null);
+    }, 200);
+    return () => { clearInterval(interval); clearInterval(directionInterval); resetInput(); };
+  }, [inRoom, resetInput]);
+
+  useEffect(() => {
+    if (!fighting) resetInput();
+    if (phase?.kind !== 'finished') setRematchPending(false);
+  }, [fighting, phase?.kind, resetInput]);
+
+  useEffect(() => { if (helpOpen) resetInput(); }, [helpOpen, resetInput]);
+
+  const toggleWeapon = useCallback(() => {
+    if (currentSnapshot.current?.phase.kind !== 'fighting') return;
+    input.current.weapon = !input.current.weapon;
+    setWeaponOn(input.current.weapon);
+  }, []);
+
+  const recover = useCallback(() => {
+    if (currentSnapshot.current?.phase.kind !== 'fighting') return;
+    input.current.recover = true;
+    if (recoveryTimer.current) clearTimeout(recoveryTimer.current);
+    recoveryTimer.current = setTimeout(() => { input.current.recover = false; }, 150);
+  }, []);
+
+  useEffect(() => {
+    function updateDrive() {
+      input.current.throttle = (keys.current.has('w') || keys.current.has('arrowup') ? 1 : 0) - (keys.current.has('s') || keys.current.has('arrowdown') ? 1 : 0);
+      input.current.steer = (keys.current.has('d') || keys.current.has('arrowright') ? 1 : 0) - (keys.current.has('a') || keys.current.has('arrowleft') ? 1 : 0);
+    }
+    function keyDown(event: KeyboardEvent) {
+      if (!activeRoom.current || helpOpen || event.metaKey || event.ctrlKey || event.altKey || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      const key = event.key.toLowerCase();
+      if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'r'].includes(key)) event.preventDefault();
+      keys.current.add(key); updateDrive();
+      if (!event.repeat && key === ' ') toggleWeapon();
+      if (!event.repeat && key === 'r') recover();
+    }
+    function keyUp(event: KeyboardEvent) { keys.current.delete(event.key.toLowerCase()); updateDrive(); }
+    function hide() { if (document.visibilityState !== 'visible') resetInput(); }
+    window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp);
+    window.addEventListener('blur', resetInput); document.addEventListener('visibilitychange', hide);
+    return () => {
+      window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp);
+      window.removeEventListener('blur', resetInput); document.removeEventListener('visibilitychange', hide);
+      if (recoveryTimer.current) clearTimeout(recoveryTimer.current);
+    };
+  }, [helpOpen, recover, resetInput, toggleWeapon]);
+
+  async function login(event: FormEvent) {
+    event.preventDefault(); setBusy('Unlocking arena'); setAuthError('');
+    try {
+      const response = await fetch('/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+      if (!response.ok) {
+        const parsed = errorSchema.safeParse(await response.json());
+        throw new Error(parsed.success ? parsed.data.error : 'That password did not unlock the arena.');
+      }
+      setPassword(''); setAuthentication('authenticated');
+    } catch (cause: unknown) { setAuthError(cause instanceof Error ? cause.message : 'Unable to unlock the arena.'); }
+    finally { setBusy(''); }
+  }
+
+  function selection(practice: boolean): JoinOptions {
+    const name = driverName.trim() || 'Driver';
+    try { localStorage.setItem('battlebots:driver', name); } catch { /* Storage is optional. */ }
+    return { botId, paint, name, practice };
+  }
+
+  async function createMatch(practice: boolean) {
+    if (!connection.current) return;
+    setBusy(practice ? 'Starting practice' : 'Creating arena'); setError(''); acceptSnapshots.current = true;
+    try {
+      const id = await connection.current.create(selection(practice));
+      activeRoom.current = true; setInRoom(true); setRoomId(id);
+      if (practice) connection.current.ready();
+    } catch (cause: unknown) {
+      acceptSnapshots.current = false;
+      setError(cause instanceof Error ? cause.message : 'Could not create this arena.');
+    } finally { setBusy(''); }
+  }
+
+  async function joinMatch(event: FormEvent) {
+    event.preventDefault(); if (!connection.current) return;
+    setBusy('Joining arena'); setError(''); acceptSnapshots.current = true;
+    try {
+      const id = roomFromInput(joinCode);
+      if (!id) throw new Error('Enter an invitation link or room code.');
+      await connection.current.join(id, selection(false));
+      activeRoom.current = true; setInRoom(true); setRoomId(id); setJoinOpen(false);
+    } catch (cause: unknown) {
+      acceptSnapshots.current = false;
+      setError(cause instanceof Error ? cause.message : 'Could not join this arena.');
+    } finally { setBusy(''); }
+  }
+
+  async function leaveMatch() {
+    acceptSnapshots.current = false; activeRoom.current = false; resetInput();
+    try { await connection.current?.leave(); } catch { /* A disconnected room can still be left locally. */ }
+    setInRoom(false); setSnapshot(null); setRoomId(''); setMyId(null); currentSnapshot.current = null;
+    setError(''); setRematchPending(false);
+    const next = new URL(window.location.href); next.searchParams.delete('room'); window.history.replaceState(null, '', next);
+    renderer.current?.setPreview(botId, paint);
+  }
+
+  async function copyInvite() {
+    try {
+      await navigator.clipboard.writeText(inviteUrl); setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch { setError('Copy the invitation link shown in the lobby and send it to your opponent.'); }
+  }
+
+  const isBusy = busy !== '';
+  const result = phase?.kind === 'finished' ? phase.result : null;
+  const resultTitle = !result ? '' : result.winnerId === null ? 'A battle well fought.' : result.winnerId === myId ? 'Victory is yours.' : 'Back to the workshop.';
+
+  return <div className={`app ${inRoom ? 'app--match' : ''}`}>
+    <header className="site-header" hidden={inRoom}>
+      <a href="/" className="wordmark" aria-label="BattleBots Arena home"><span>BATTLE<span className="wordmark-bots">BOTS</span><sup>®</sup></span><small>ARENA</small></a>
+      <nav className="header-nav" aria-label="Main navigation"><span className="nav-active">THE GARAGE</span><button onClick={() => setHelpOpen(true)}>HOW TO PLAY <Icon name="arrow" size={14} /></button></nav>
+      <div className="header-right"><span className="alpha-badge"><i /> PLAYABLE ALPHA</span><button className="icon-button sound-button" onClick={() => setMuted(!muted)} aria-label={muted ? 'Turn sound on' : 'Mute sound'}><Icon name={muted ? 'muted' : 'sound'} /></button></div>
+    </header>
+
+    <main className={inRoom ? 'match-main' : 'garage-main'}>
+      <section className="hero" hidden={inRoom}>
+        <div><div className="eyebrow hero-eyebrow"><span className="status-dot" /> ROBOT FIGHTING. NO HOLDING BACK.</div><h1>BUILT TO<br /><span>BREAK THINGS.</span></h1></div>
+        <div className="hero-copy"><span className="index-label">01 / ENTER THE ARENA</span><p>Your favorite bots. Your controls.<br />Challenge a friend. Settle it in the BattleBox.</p><div className="hero-facts"><span>REAL-TIME 1V1</span><i /><span>PLAY IN YOUR BROWSER</span></div></div>
+      </section>
+
+      <div className="arena-layout">
+        <section className={`arena-stage ${inRoom ? 'arena-stage--match' : ''}`} aria-label="3D BattleBox arena">
+          <canvas ref={canvas} className="arena-canvas" aria-label="Live 3D robot arena" />
+          {!rendererReady && !rendererError ? <div className="arena-loading"><span className="loader" /><span>POWERING UP THE BATTLEBOX</span></div> : null}
+          {rendererError ? <div className="arena-loading arena-failed"><Icon name="help" size={30} /><strong>Let’s get your arena running.</strong><p>{rendererError}</p><button className="button button-secondary" onClick={() => window.location.reload()}>RELOAD ARENA</button></div> : null}
+
+          {!inRoom ? <>
+            <div className="preview-corner"><span className="live-pill"><i /> LIVE 3D PREVIEW</span><span className="arena-coordinate">BATTLEBOX / 001</span></div>
+            <div className="preview-reticle preview-reticle--tl" /><div className="preview-reticle preview-reticle--br" />
+            <div className="preview-info"><div><span className="preview-number">{selectedBot.number}</span><div><span className="eyebrow">{selectedBot.category}</span><h2>{selectedBot.name}</h2><p>{selectedBot.tagline}</p></div></div><span className="preview-weight">250<span>LB<br />CLASS</span></span></div>
+            <div className="preview-bottom"><span>ENGINEERED FOR DESTRUCTION</span><span>3D PROTOTYPE <i /> ARENA V0.1</span></div>
+          </> : <>
+            <div className="match-header"><HealthBar player={local} local /><div className="match-clock"><span>{phase?.kind === 'finished' ? 'MATCH ENDED' : phase?.kind === 'fighting' ? 'ROUND 01' : 'BATTLEBOTS ARENA'}</span><strong>{phase?.kind === 'finished' ? 'FINAL' : phase?.kind === 'fighting' ? formatTime(phase.seconds) : '02:00'}</strong><span className={`connection-label ${status === 'connected' || phase?.kind === 'finished' ? '' : 'connection-label--lost'}`}><i />{phase?.kind === 'finished' ? 'COMPLETE' : status === 'connected' ? 'LIVE' : status.toUpperCase()}</span></div><HealthBar player={opponent} /></div>
+            <div className="match-utility"><button className="icon-button" onClick={() => setMuted(!muted)} aria-label={muted ? 'Turn sound on' : 'Mute sound'}><Icon name={muted ? 'muted' : 'sound'} /></button><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="How to play"><Icon name="help" /></button><button className="icon-button" onClick={() => void leaveMatch()} aria-label="Leave match"><Icon name="exit" /></button></div>
+            {phase?.kind === 'lobby' ? <div className="match-overlay"><div className="lobby-panel"><span className="eyebrow"><span className="status-dot" /> YOUR BATTLEBOX IS READY</span><h2>{opponent ? 'Face to face.' : 'Who’s your challenger?'}</h2><p>{opponent ? 'Both drivers must be ready before the battle begins.' : 'Send your invitation to a friend. They can join from any browser.'}</p><div className="invite-box"><span>PRIVATE ROOM <strong>{roomId}</strong></span><button className="icon-button" onClick={() => void copyInvite()} aria-label="Copy invitation link"><Icon name={copied ? 'check' : 'copy'} /></button></div><input className="invite-link" value={inviteUrl} readOnly aria-label="Invitation link" onFocus={(event) => event.currentTarget.select()} /><div className="lobby-seats"><span><i className={local?.ready ? 'is-ready' : ''} />{local?.name ?? 'You'} {local?.ready ? '· READY' : ''}</span><span><i className={opponent?.ready ? 'is-ready' : ''} />{opponent?.name ?? 'Waiting for opponent'} {opponent?.ready ? '· READY' : ''}</span></div><button className="button button-primary" disabled={local?.ready || status !== 'connected'} onClick={() => connection.current?.ready()}>{local?.ready ? <><Icon name="check" /> READY TO RUMBLE</> : <>I’M READY <Icon name="arrow" /></>}</button><button className="text-button" onClick={() => void copyInvite()}>{copied ? 'INVITATION COPIED' : 'COPY INVITATION LINK'}</button></div></div> : null}
+            {phase?.kind === 'countdown' ? <div className="countdown-overlay"><span>IT’S ROBOT FIGHTING TIME</span><strong key={Math.ceil(phase.seconds)}>{Math.max(1, Math.ceil(phase.seconds))}</strong><span>GET READY</span></div> : null}
+            {result ? <div className="match-overlay"><div className="result-panel"><span className="eyebrow">{result.winnerId === myId ? 'THE WINNER’S CIRCLE' : result.winnerId === null ? 'DRAW' : 'EVERY GREAT BOT GETS REBUILT'}</span><h2>{resultTitle}</h2><span className="result-method">{result.reason === 'knockout' ? 'KNOCKOUT' : result.reason === 'timeout' ? 'TIME DECISION' : result.reason === 'forfeit' ? 'FORFEIT' : result.reason.toUpperCase()}</span><div className="result-stats"><div><strong>{Math.round(local?.damageDealt ?? 0)}</strong><span>DAMAGE DEALT</span></div><div><strong>{local?.hits ?? 0}</strong><span>HITS LANDED</span></div><div><strong>{Math.ceil(local?.health ?? 0)}%</strong><span>HULL REMAINING</span></div></div><button className="button button-primary" disabled={rematchPending || status !== 'connected'} onClick={() => { connection.current?.rematch(); setRematchPending(true); }}>{rematchPending ? 'WAITING FOR OPPONENT' : 'RUN IT BACK'}<Icon name="recover" /></button><button className="text-button" onClick={() => void leaveMatch()}>BACK TO THE GARAGE <Icon name="arrow" size={16} /></button></div></div> : null}
+            {status === 'reconnecting' || status === 'disconnected' ? <div className="connection-notice" role="status"><span className="loader" /><div><strong>{status === 'reconnecting' ? 'Reconnecting to your arena' : 'Connection interrupted'}</strong><span>Your bot stops safely while disconnected.</span></div>{status === 'disconnected' ? <button className="button button-secondary" onClick={() => { acceptSnapshots.current = true; void connection.current?.reconnect(); }}>RETRY</button> : null}</div> : null}
+            {phase?.kind !== 'finished' ? <div className={`touch-controls ${!fighting ? 'touch-controls--inactive' : ''}`}>
+              <div className="drive-control"><Joystick disabled={!fighting} onChange={(throttle, steer) => { input.current.throttle = throttle; input.current.steer = steer; }} /><span>DRIVE <kbd>W A S D</kbd></span></div>
+              <div className="weapon-controls"><button className="recover-control" disabled={!fighting} onClick={recover} aria-label="Self right robot"><Icon name="recover" size={23} /><span>SELF RIGHT <kbd>R</kbd></span></button><button className={`weapon-control ${weaponOn ? 'weapon-control--active' : ''}`} disabled={!fighting} onClick={toggleWeapon} aria-pressed={weaponOn}><Icon name="weapon" size={29} /><span>{weaponOn ? 'WEAPON ON' : 'SPIN UP'}</span><small>{Math.round((local?.weaponCharge ?? 0) * 100)}% POWER</small><kbd>SPACE</kbd></button></div>
+            </div> : null}
+            {fighting && opponentDirection ? <div className={`opponent-indicator opponent-indicator--${opponentDirection}`}><Icon name="arrow" style={{ transform: opponentDirection === 'left' ? 'rotate(180deg)' : undefined }} /><span>OPPONENT</span></div> : null}
+            <div className="rotate-hint"><Icon name="rotate" size={26} /><span>Rotate your phone for the full BattleBox.</span></div>
+          </>}
+        </section>
+
+        <aside className="garage-panel" hidden={inRoom}>
+          <div className="panel-heading"><span className="eyebrow">CHOOSE YOUR MACHINE</span><span className="tiny-label">02 AVAILABLE</span></div>
+          <div className="roster">
+            {Object.values(BOTS).map((bot) => <button key={bot.id} className={`bot-card ${botId === bot.id ? 'bot-card--selected' : ''}`} onClick={() => { setBotId(bot.id); setPaint('signature'); }} aria-pressed={botId === bot.id}>
+              <span className="bot-index">{bot.number}</span><div className="bot-card-copy"><span className="bot-category">{bot.category}</span><strong>{bot.name}</strong></div><div className="bot-card-visual" style={{ color: bot.accent }}><BotSilhouette horizontal={bot.id === 'tombstone'} /></div><span className="selection-indicator">{botId === bot.id ? <Icon name="check" size={12} /> : null}</span>
+            </button>)}
+          </div>
+          <div className="bot-specs">{Object.entries(selectedBot.stats).map(([label, value]) => <div className="spec" key={label}><span>{label}</span><div className="spec-bars">{[1, 2, 3, 4, 5].map((level) => <i className={level <= value ? 'filled' : ''} key={level} />)}</div></div>)}</div>
+          <div className="paint-row"><div><span className="eyebrow">MAKE IT YOURS</span><span className="paint-name">{PAINTS.find((item) => item.id === paint)?.name}</span></div><div className="paint-options" role="group" aria-label="Robot paint">{PAINTS.map((option) => <button key={option.id} className={`paint-chip ${paint === option.id ? 'paint-chip--selected' : ''}`} onClick={() => setPaint(option.id)} aria-label={`${option.name} paint`} aria-pressed={paint === option.id}><i style={{ backgroundColor: paintColor(botId, option.id) }} />{paint === option.id ? <Icon name="check" size={13} /> : null}</button>)}</div></div>
+          <div className="setup-actions"><label className="driver-label" htmlFor="driver-name">DRIVER NAME <span>YOUR CALL SIGN</span></label><input id="driver-name" className="text-input driver-input" value={driverName} maxLength={20} onChange={(event) => setDriverName(event.target.value)} placeholder="Driver" autoComplete="nickname" /><button className="button button-primary host-button" onClick={() => void createMatch(false)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}><span>{isBusy ? busy.toUpperCase() : 'CREATE A MATCH'}</span><Icon name="arrow" /></button><button className="button button-secondary" onClick={() => setJoinOpen(true)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}><Icon name="link" size={18} /> JOIN A FRIEND</button><div className="practice-row"><span>FIRST TIME IN THE BOX?</span><button onClick={() => void createMatch(true)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}>TRY PRACTICE <Icon name="arrow" size={14} /></button></div></div>
+        </aside>
+      </div>
+
+      <section className="garage-bottom" hidden={inRoom}><div className="bottom-note"><span className="outline-number">01</span><div><strong>CHOOSE. CHALLENGE. DESTROY.</strong><p>One arena. Two bots. No downloads between you and the action.</p></div></div><div className="control-preview"><span>DESKTOP</span><kbd>WASD</kbd><span>DRIVE</span><kbd>SPACE</kbd><span>WEAPON</span><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="View controls"><Icon name="help" size={17} /></button></div></section>
+    </main>
+
+    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.1</span></span></footer>
+
+    {error ? <div className="toast" role="alert"><Icon name="help" size={18} /><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="Dismiss message"><Icon name="close" size={16} /></button></div> : null}
+
+    {authentication === 'required' || authentication === 'failed' || authentication === 'checking' ? <Modal title={authentication === 'checking' ? 'Opening the BattleBox.' : authentication === 'failed' ? 'The arena is warming up.' : 'Enter the BattleBox.'}>
+      {authentication === 'checking' ? <div className="session-loading"><span className="loader" /><p>Connecting to the arena server…</p></div> : authentication === 'failed' ? <><p>{authError}</p><button className="button button-primary" onClick={() => void checkSession()}>TRY AGAIN <Icon name="recover" /></button></> : <form onSubmit={(event) => void login(event)}><p>This early build is shared with an arena password. Your invitation is all you need.</p><label className="field-label" htmlFor="arena-password">ARENA PASSWORD</label><input id="arena-password" className="text-input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" placeholder="Enter your arena password" />{authError ? <p className="form-error" role="alert">{authError}</p> : null}<button className="button button-primary" disabled={isBusy}>{isBusy ? 'UNLOCKING…' : 'UNLOCK THE ARENA'}<Icon name="arrow" /></button></form>}
+    </Modal> : null}
+
+    {joinOpen && authentication === 'authenticated' ? <Modal title="Meet in the BattleBox." onClose={() => setJoinOpen(false)}><form onSubmit={(event) => void joinMatch(event)}><p>Paste your friend’s invitation link or enter their private room code. Your selected bot comes with you.</p><label className="field-label" htmlFor="room-code">INVITATION LINK OR ROOM CODE</label><input id="room-code" className="text-input" value={joinCode} onChange={(event) => setJoinCode(event.target.value)} placeholder="Paste invitation or enter code" required autoComplete="off" /><div className="join-selection"><span style={{ color: paintColor(botId, paint) }}><BotSilhouette horizontal={botId === 'tombstone'} /></span><div><small>YOUR MACHINE</small><strong>{selectedBot.name}</strong><span>{driverName.trim() || 'Driver'}</span></div></div><button className="button button-primary" disabled={isBusy}>{isBusy ? 'JOINING…' : 'JOIN THE ARENA'}<Icon name="arrow" /></button></form></Modal> : null}
+
+    {helpOpen ? <Modal title="Make some mayhem." onClose={() => setHelpOpen(false)}><p>Choose a bot, invite a friend, and hit Ready. You have two minutes to finish the job.</p><div className="howto-list"><div><span>01</span><div><strong>Drive with intent.</strong><p>Use the left joystick or WASD. Push up to accelerate, down to reverse, and left or right to steer your bot.</p></div></div><div><span>02</span><div><strong>Let the weapon do the talking.</strong><p>Tap Spin Up or press Space to toggle your weapon. Build power, line up your opponent, and make contact.</p></div></div><div><span>03</span><div><strong>Get back in the fight.</strong><p>Overturned? Tap Self Right or press R. Win by knockout or have more hull health when the clock runs out.</p></div></div></div><button className="button button-primary" onClick={() => setHelpOpen(false)}>GOT IT. LET’S FIGHT. <Icon name="arrow" /></button></Modal> : null}
+  </div>;
+}

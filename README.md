@@ -11,7 +11,7 @@ pnpm install
 pnpm dev
 ```
 
-Open http://localhost:3000. The local development password is `let-the-bots-battle`. Production requires a separate password and signing secret.
+Open http://localhost:3000. The development fallback password is `let-the-bots-battle`. A `DEMO_PASSWORD` in `.env` overrides it. Production requires a separate password and signing secret.
 
 Create a match, share its invitation link, and select **Ready** on both devices. For a solo game, select **Try practice**. Practice starts automatically after the countdown.
 
@@ -21,6 +21,8 @@ On a phone, rotate to landscape during a match. Use the left stick to drive and 
 
 On a keyboard, use WASD or the arrow keys to drive, Space to toggle the weapon, and R to recover. Sound is off initially. Use the speaker button to enable it.
 
+In the garage, drag the 3D view to inspect a bot from different angles. Use the mouse wheel to zoom. Witch Doctor has an active ribcage self-righter. Tombstone drives inverted and has no active self-righting control. Weapons spin up gradually, coast after power is cut, and lose speed after impacts.
+
 Matches last two minutes. A knockout ends a match immediately. Otherwise, the bot with more health wins. Equal health produces a draw.
 
 ## Verify changes
@@ -28,6 +30,7 @@ Matches last two minutes. A knockout ends a match immediately. Otherwise, the bo
 ```sh
 pnpm typecheck
 pnpm test
+pnpm verify:models
 pnpm build
 ```
 
@@ -54,7 +57,11 @@ The public repository exposes the source code. The shared game password gates mu
 
 ## Current boundaries
 
-The two bots are procedural prototype models. Paint changes appearance only. Match state is temporary and resets when the server restarts. Guests can reconnect to their seat for 15 seconds after a dropped connection. The initial server limit is four rooms.
+The models reconstruct WCVII Witch Doctor and classic 2021 Tombstone from nine primary-source reference photos. They include mechanical frame details, rubber tyres, PBR metal and paint, and locally bundled photo-derived signature graphics. [Photo references and mechanical sources](docs/bot-references.md) document the selected configurations.
+
+Wheel traction, spinner contact volumes, recoil, coasting, gyroscopic effects, inverted driving, and motor-driven recovery run on the server. Dimensions and force coefficients are game-space approximations rather than team CAD or measured telemetry. Paint changes appearance only.
+
+Match state is temporary and resets when the server restarts. Guests can reconnect to their seat for 15 seconds after a dropped connection. Local configuration supports four rooms. The free Render blueprint starts at two rooms to leave CPU headroom for the richer physics. For that deployment, set `VERIFY_LOAD_ROOMS=2` when running the load check. Benchmark the actual hosting tier before increasing capacity.
 
 The game has no age gate or date-of-birth collection. Accounts, payments, public matchmaking, spectators, team battles, and real-show activities are future work.
 

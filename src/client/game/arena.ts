@@ -9,16 +9,19 @@ import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
 import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+import { ImageProcessingConfiguration } from '@babylonjs/core/Materials/imageProcessingConfiguration';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import '@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent';
 import { ARENA, BOTS, NEUTRAL_INPUT, driveVelocity, type ArenaRenderer, type BotId, type MatchState, type PaintId, type PlayerInput, type PlayerSnapshot } from '../../shared/protocol';
 import { makeBot, material, type BotModel } from './models';
 import { makeStage } from './stage';
 import { ArenaSound } from './sound';
+import { createArenaEnvironment } from './lighting';
 
 interface DisplayBot {
   model: BotModel;
   state: PlayerSnapshot | null;
+  weaponBlur: Mesh;
 }
 
 interface Spark {
@@ -35,6 +38,12 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   const scene = new Scene(engine);
   scene.clearColor = new Color4(0.047, 0.061, 0.071, 1);
   scene.ambientColor = new Color3(0.18, 0.2, 0.21);
+  scene.environmentTexture = createArenaEnvironment(scene);
+  scene.environmentIntensity = 0.85;
+  scene.imageProcessingConfiguration.toneMappingEnabled = true;
+  scene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
+  scene.imageProcessingConfiguration.exposure = 1.2;
+  scene.imageProcessingConfiguration.contrast = 1.08;
   scene.fogMode = Scene.FOGMODE_EXP2;
   scene.fogDensity = 0.012;
   scene.fogColor = new Color3(0.047, 0.061, 0.071);
@@ -51,7 +60,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   fill.groundColor = new Color3(0.15, 0.17, 0.2);
   const key = new DirectionalLight('arena-key', new Vector3(-0.45, -1, -0.28), scene);
   key.position.set(8, 18, 7);
-  key.intensity = 1.55;
+  key.intensity = 2.3;
   key.diffuse = new Color3(1, 0.91, 0.73);
   key.shadowMinZ = 0.1;
   key.shadowMaxZ = 60;
@@ -60,7 +69,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   rim.intensity = 1.8;
   rim.range = 22;
   const shadows = new ShadowGenerator(1024, key);
-  shadows.usePoissonSampling = true;
+  shadows.usePercentageCloserFiltering = true;
+  shadows.filteringQuality = ShadowGenerator.QUALITY_LOW;
   shadows.bias = 0.0015;
   shadows.normalBias = 0.02;
   shadows.darkness = 0.35;
@@ -82,10 +92,16 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   let previewPaint: PaintId = 'signature';
   let fpsTime = 0;
   let fpsFrames = 0;
+  let orbitYaw = 0.72;
+  let orbitElevation = 0.48;
+  let orbitDistance = 6.8;
+  let orbitPointer: { id: number; x: number; y: number } | null = null;
   const cameraTarget = new Vector3(0, 0.5, 0);
   const desiredCamera = new Vector3();
   const targetPosition = new Vector3();
   const targetQuaternion = Quaternion.Identity();
+  const headingCorrection = Quaternion.Identity();
+  const authoritativeQuaternion = Quaternion.Identity();
   const previewQuaternion = Quaternion.Identity();
   const identity = Matrix.Identity();
 
@@ -106,13 +122,27 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     if (existing && existing.model.botId === botId && existing.model.paint === paint) return existing;
     if (existing) {
       for (const mesh of existing.model.meshes) shadows.removeShadowCaster(mesh);
+      existing.weaponBlur.dispose(false, true);
       existing.model.dispose();
     }
     const model = makeBot(scene, botId, paint, id);
-    model.root.position.set(0, 0.5, 0);
+    model.root.position.set(0, BOTS[botId].physics.wheelRadius, 0);
     model.root.rotationQuaternion = Quaternion.Identity();
     for (const mesh of model.meshes) shadows.addShadowCaster(mesh);
-    const display = { model, state: null };
+    const blurMaterial = material(scene, `${id}-weapon-sweep`, '#a6aaab');
+    blurMaterial.emissiveColor = new Color3(0.28, 0.30, 0.31);
+    blurMaterial.alpha = 0.10;
+    blurMaterial.backFaceCulling = false;
+    blurMaterial.disableLighting = true;
+    const weapon = BOTS[botId].weapon;
+    const weaponBlur = MeshBuilder.CreateDisc(`${id}-rotor-sweep`, { radius: weapon.radius, tessellation: 48, sideOrientation: 2 }, scene);
+    weaponBlur.parent = model.weapon;
+    if (weapon.kind === 'vertical-disc') weaponBlur.rotation.y = Math.PI / 2;
+    else weaponBlur.rotation.x = Math.PI / 2;
+    weaponBlur.material = blurMaterial;
+    weaponBlur.isPickable = false;
+    weaponBlur.visibility = 0;
+    const display = { model, state: null, weaponBlur };
     bots.set(id, display);
     return display;
   }
@@ -121,6 +151,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     const bot = bots.get(id);
     if (!bot) return;
     for (const mesh of bot.model.meshes) shadows.removeShadowCaster(mesh);
+    bot.weaponBlur.dispose(false, true);
     bot.model.dispose();
     bots.delete(id);
   }
@@ -130,9 +161,9 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       if (id !== previewId && id !== rivalId) removeBot(id);
     }
     const first = ensureBot(previewId, previewBot, previewPaint);
-    first.model.root.position.set(0, 0.5, 0);
+    first.model.root.position.set(0, BOTS[previewBot].physics.wheelRadius, 0);
     const rival = ensureBot(rivalId, previewBot === 'witchdoctor' ? 'tombstone' : 'witchdoctor', 'signature');
-    rival.model.root.position.set(-5.7, 0.5, -6.5);
+    rival.model.root.position.set(-5.7, BOTS[rival.model.botId].physics.wheelRadius, -6.5);
     rival.model.root.rotationQuaternion = Quaternion.RotationYawPitchRoll(0.55, 0, 0);
   }
 
@@ -159,6 +190,33 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   resize.observe(canvas);
   window.addEventListener('resize', fitResolution);
   const unlockAudio = () => sound.unlock();
+  const orbitDown = (event: PointerEvent) => {
+    if (snapshot) return;
+    orbitPointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    canvas.setPointerCapture(event.pointerId);
+  };
+  const orbitMove = (event: PointerEvent) => {
+    if (!orbitPointer || orbitPointer.id !== event.pointerId || snapshot) return;
+    orbitYaw -= (event.clientX - orbitPointer.x) * 0.008;
+    orbitElevation = Math.max(0.12, Math.min(1.12, orbitElevation + (event.clientY - orbitPointer.y) * 0.006));
+    orbitPointer.x = event.clientX;
+    orbitPointer.y = event.clientY;
+  };
+  const orbitEnd = (event: PointerEvent) => {
+    if (orbitPointer?.id !== event.pointerId) return;
+    orbitPointer = null;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  };
+  const orbitZoom = (event: WheelEvent) => {
+    if (snapshot) return;
+    event.preventDefault();
+    orbitDistance = Math.max(5.6, Math.min(14, orbitDistance + event.deltaY * 0.008));
+  };
+  canvas.addEventListener('pointerdown', orbitDown);
+  canvas.addEventListener('pointermove', orbitMove);
+  canvas.addEventListener('pointerup', orbitEnd);
+  canvas.addEventListener('pointercancel', orbitEnd);
+  canvas.addEventListener('wheel', orbitZoom, { passive: false });
   window.addEventListener('pointerdown', unlockAudio);
   window.addEventListener('keydown', unlockAudio);
   fitResolution();
@@ -178,34 +236,45 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         if (!player) continue;
         const isLocal = id === localId;
         targetPosition.set(player.position.x, player.position.y, player.position.z);
-        let yaw = player.yaw;
-        if (isLocal && snapshot.phase.kind === 'fighting' && player.position.y < 1.1) {
-          yaw += input.steer * BOTS[player.botId].turnSpeed * elapsed;
-          const prediction = driveVelocity(yaw, input.throttle, BOTS[player.botId].speed);
-          targetPosition.x += prediction.x * elapsed;
-          targetPosition.z += prediction.z * elapsed;
-        } else if (snapshot.phase.kind === 'fighting') {
-          targetPosition.x += player.velocity.x * elapsed * 0.6;
-          targetPosition.z += player.velocity.z * elapsed * 0.6;
+        const definition = BOTS[player.botId];
+        const rotation = player.rotation;
+        const up = 1 - 2 * (rotation.x * rotation.x + rotation.z * rotation.z);
+        let predictedYaw = 0;
+        if (snapshot.phase.kind === 'fighting') {
+          targetPosition.x += player.velocity.x * elapsed;
+          targetPosition.z += player.velocity.z * elapsed;
+          if (isLocal && Math.abs(up) > 0.7 && player.position.y < definition.physics.wheelRadius + 0.35 && !player.recovering) {
+            const grip = player.inverted && player.botId === 'witchdoctor' ? 0.35 : 1;
+            const desiredYawRate = input.steer * definition.turnSpeed * grip;
+            const yawChange = Math.max(-definition.physics.angularAcceleration * elapsed,
+              Math.min(definition.physics.angularAcceleration * elapsed, desiredYawRate - player.angularVelocity.y));
+            predictedYaw = (player.angularVelocity.y + yawChange * 0.5) * elapsed;
+            const prediction = driveVelocity(player.yaw + predictedYaw, input.throttle, definition.speed * grip);
+            const blendAcceleration = 1 - Math.exp(-definition.physics.acceleration * elapsed / definition.speed);
+            targetPosition.x += (prediction.x - player.velocity.x) * blendAcceleration * elapsed * 0.5;
+            targetPosition.z += (prediction.z - player.velocity.z) * blendAcceleration * elapsed * 0.5;
+          }
         }
         targetPosition.x = Math.max(-ARENA.halfWidth + 0.9, Math.min(ARENA.halfWidth - 0.9, targetPosition.x));
         targetPosition.z = Math.max(-ARENA.halfDepth + 1.1, Math.min(ARENA.halfDepth - 1.1, targetPosition.z));
         Vector3.LerpToRef(bot.model.root.position, targetPosition, isLocal ? Math.min(1, blend * 1.5) : blend, bot.model.root.position);
-        const rotation = player.rotation;
-        if (isLocal && player.position.y < 1.1 && Math.abs(rotation.x) + Math.abs(rotation.z) < 0.25) {
-          Quaternion.RotationYawPitchRollToRef(yaw, 0, 0, targetQuaternion);
-        } else {
-          targetQuaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
-        }
+        authoritativeQuaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+        Quaternion.RotationYawPitchRollToRef(predictedYaw, 0, 0, headingCorrection);
+        headingCorrection.multiplyToRef(authoritativeQuaternion, targetQuaternion);
         const current = bot.model.root.rotationQuaternion;
         if (current) Quaternion.SlerpToRef(current, targetQuaternion, blend, current);
-        const speed = Math.hypot(player.velocity.x, player.velocity.z);
-        for (const wheel of bot.model.wheels) wheel.rotation.x += speed * dt * 2.4 * (input.throttle < 0 && isLocal ? -1 : 1);
-        const weaponSpeed = player.weaponActive ? 12 + player.weaponCharge * 35 : 0.8;
-        if (player.botId === 'witchdoctor') bot.model.weapon.rotation.x += dt * weaponSpeed;
-        else bot.model.weapon.rotation.y += dt * weaponSpeed;
+        for (const wheel of bot.model.wheels) {
+          wheel.rotation.x += (wheel.position.x < 0 ? player.wheelSpeedLeft : player.wheelSpeedRight) * dt;
+        }
+        const weaponAngle = player.weaponAngle + definition.weapon.spinDirection * player.weaponRpm * Math.PI / 30 * elapsed;
+        if (definition.weapon.kind === 'vertical-disc') bot.model.weapon.rotation.x = weaponAngle;
+        else bot.model.weapon.rotation.y = weaponAngle;
+        bot.weaponBlur.visibility = Math.max(0, Math.min(1, (player.weaponRpm / definition.weapon.maxRpm - 0.15) * 1.15));
+        if (bot.model.selfRighter) bot.model.selfRighter.rotation.x = -Math.sin(player.recoveryProgress * Math.PI) * 2.6;
+        bot.model.setDamage?.(1 - player.health / 100);
         bot.model.root.setEnabled(true);
         bot.model.glow.alpha = player.connected ? 1 : 0.25;
+        if (isLocal) sound.motor(player.weaponRpm / definition.weapon.maxRpm, Math.hypot(player.velocity.x, player.velocity.z) / definition.speed, player.botId === 'tombstone');
       }
 
       const followed = localId ? bots.get(localId) : bots.values().next().value;
@@ -236,17 +305,18 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     } else {
       const selected = bots.get(previewId);
       if (selected) {
-        Quaternion.RotationYawPitchRollToRef(-0.23 + Math.sin(time * 0.22) * 0.16, 0, 0, previewQuaternion);
+        Quaternion.RotationYawPitchRollToRef(-0.23, 0, 0, previewQuaternion);
         const current = selected.model.root.rotationQuaternion;
         if (current) Quaternion.SlerpToRef(current, previewQuaternion, blend, current);
-        if (selected.model.botId === 'witchdoctor') selected.model.weapon.rotation.x += dt * 1.1;
-        else selected.model.weapon.rotation.y += dt * 0.75;
+        selected.weaponBlur.visibility = 0;
       }
-      desiredCamera.set(6.8 + Math.sin(time * 0.12) * 0.8, 5.0 + Math.cos(time * 0.15) * 0.18, 7.8 + Math.cos(time * 0.12) * 0.5);
+      const horizontalDistance = Math.cos(orbitElevation) * orbitDistance;
+      desiredCamera.set(Math.sin(orbitYaw) * horizontalDistance, Math.sin(orbitElevation) * orbitDistance + 0.5, Math.cos(orbitYaw) * horizontalDistance);
       Vector3.LerpToRef(camera.position, desiredCamera, 1 - Math.exp(-dt * 2.5), camera.position);
-      Vector3.LerpToRef(cameraTarget, new Vector3(-0.25, 0.4, -0.8), blend, cameraTarget);
+      Vector3.LerpToRef(cameraTarget, new Vector3(0, 0.4, 0.15), blend, cameraTarget);
       camera.setTarget(cameraTarget);
       canvas.dataset.opponentDirection = 'visible';
+      sound.motor(0, 0, false);
     }
 
     for (const spark of sparks) {
@@ -316,6 +386,11 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       disposed = true;
       resize.disconnect();
       window.removeEventListener('resize', fitResolution);
+      canvas.removeEventListener('pointerdown', orbitDown);
+      canvas.removeEventListener('pointermove', orbitMove);
+      canvas.removeEventListener('pointerup', orbitEnd);
+      canvas.removeEventListener('pointercancel', orbitEnd);
+      canvas.removeEventListener('wheel', orbitZoom);
       window.removeEventListener('pointerdown', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
       engine.stopRenderLoop();

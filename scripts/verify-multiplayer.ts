@@ -8,6 +8,10 @@ import type { Room } from '@colyseus/sdk';
 import { BOTS, TICK_RATE, matchSnapshotSchema } from '../src/shared/protocol';
 import type { JoinOptions, MatchState, PlayerInput } from '../src/shared/protocol';
 
+try { process.loadEnvFile(); } catch (error) {
+  if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+}
+
 // Node's built-in WebSocket cannot supply Cookie headers. Let the SDK use its
 // bundled ws implementation instead; this change is isolated to this test process.
 Reflect.deleteProperty(globalThis, 'WebSocket');

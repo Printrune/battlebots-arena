@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process';
 const owner = 'Printrune';
 const repository = 'battlebots-arena';
 const execute = process.argv.includes('--publish');
+const commitMessage = process.argv.find((argument) => argument.startsWith('--message='))?.slice('--message='.length)
+  || 'Build mobile BattleBots arena with private multiplayer';
 
 function git(args, options = {}) {
   const result = spawnSync('git', args, { encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' }, ...options });
@@ -44,7 +46,7 @@ git(['add', '--all']);
 const stagedFiles = git(['diff', '--cached', '--name-only']).split('\n').filter(Boolean);
 if (stagedFiles.some((file) => /(^|\/)\.env($|\.(?!example$))|(^|\/)\.local\//.test(file))) throw new Error('A private environment file was staged. Remove it before publishing.');
 if (stagedFiles.length) {
-  git(['-c', `user.name=${owner}`, '-c', `user.email=${profile.id}+${owner}@users.noreply.github.com`, 'commit', '-m', 'Build mobile BattleBots arena with private multiplayer']);
+  git(['-c', `user.name=${owner}`, '-c', `user.email=${profile.id}+${owner}@users.noreply.github.com`, 'commit', '-m', commitMessage]);
 }
 const remote = `https://github.com/${owner}/${repository}.git`;
 const remotes = git(['remote']);

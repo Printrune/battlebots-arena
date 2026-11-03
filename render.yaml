@@ -14,7 +14,7 @@ services:
       - key: NODE_VERSION
         value: 24
       - key: MAX_ROOMS
-        value: 4
+        value: 2
       - key: DEMO_PASSWORD
         sync: false
       - key: SESSION_SECRET

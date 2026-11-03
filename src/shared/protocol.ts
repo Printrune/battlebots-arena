@@ -13,6 +13,35 @@ export type BotId = z.infer<typeof botIdSchema>;
 export const paintIdSchema = z.enum(['signature', 'ember', 'glacier', 'ultraviolet']);
 export type PaintId = z.infer<typeof paintIdSchema>;
 
+export interface BotPhysics {
+  mass: number;
+  halfExtents: { x: number; y: number; z: number };
+  chassisOffset: { x: number; y: number; z: number };
+  wheelRadius: number;
+  wheelWidth: number;
+  wheelZ: number[];
+  trackWidth: number;
+  acceleration: number;
+  braking: number;
+  lateralGrip: number;
+  angularAcceleration: number;
+  invertible: boolean;
+  selfRight: boolean;
+}
+
+export interface BotWeapon {
+  kind: 'vertical-disc' | 'horizontal-bar';
+  mount: { x: number; y: number; z: number };
+  radius: number;
+  halfWidth: number;
+  spinUpSeconds: number;
+  coastDownSeconds: number;
+  maxRpm: number;
+  spinDirection: 1 | -1;
+  energyLossOnHit: number;
+  gyroStrength: number;
+}
+
 export interface BotDefinition {
   id: BotId;
   name: string;
@@ -26,20 +55,48 @@ export interface BotDefinition {
   weaponCooldown: number;
   accent: string;
   stats: { power: number; speed: number; armor: number };
+  physics: BotPhysics;
+  weapon: BotWeapon;
 }
 
 export const BOTS: Record<BotId, BotDefinition> = {
   witchdoctor: {
     id: 'witchdoctor', name: 'Witch Doctor', category: 'VERTICAL SPINNER',
-    tagline: 'A little magic. A lot of mayhem.', number: '01', speed: 8.2,
-    turnSpeed: 2.5, damage: 16, weaponReach: 2.8, weaponCooldown: 0.65,
-    accent: '#a5d549', stats: { power: 4, speed: 5, armor: 3 },
+    tagline: 'Four-wheel drive. A devastating vertical drisc.', number: '01', speed: 7.8,
+    turnSpeed: 2.35, damage: 23, weaponReach: 2.8, weaponCooldown: 0.32,
+    accent: '#75bf35', stats: { power: 4, speed: 5, armor: 3 },
+    // Game-space proportions reconstructed from the WCVII reference photographs.
+    // Drive/weapon tuning is an approximation, not unpublished team CAD or telemetry.
+    physics: {
+      mass: 113.4, halfExtents: { x: 0.95, y: 0.22, z: 0.95 },
+      chassisOffset: { x: 0, y: -0.12, z: -0.14 }, wheelRadius: 0.46,
+      wheelWidth: 0.36, wheelZ: [-0.63, 0.63], trackWidth: 2,
+      acceleration: 11, braking: 15, lateralGrip: 7.5, angularAcceleration: 6,
+      invertible: true, selfRight: true,
+    },
+    weapon: {
+      kind: 'vertical-disc', mount: { x: 0, y: 0.22, z: 1.08 }, radius: 0.62,
+      halfWidth: 0.39, spinUpSeconds: 2.1, coastDownSeconds: 5.5,
+      maxRpm: 4_500, spinDirection: -1, energyLossOnHit: 0.45, gyroStrength: 0.8,
+    },
   },
   tombstone: {
     id: 'tombstone', name: 'Tombstone', category: 'HORIZONTAL SPINNER',
-    tagline: 'One hit can change everything.', number: '02', speed: 6.7,
-    turnSpeed: 2.1, damage: 22, weaponReach: 3.1, weaponCooldown: 0.9,
-    accent: '#6caff4', stats: { power: 5, speed: 3, armor: 4 },
+    tagline: 'Two wheels. One massive horizontal bar.', number: '02', speed: 6.4,
+    turnSpeed: 2.65, damage: 31, weaponReach: 3.4, weaponCooldown: 0.45,
+    accent: '#89928e', stats: { power: 5, speed: 3, armor: 4 },
+    physics: {
+      mass: 113.4, halfExtents: { x: 0.97, y: 0.22, z: 0.65 },
+      chassisOffset: { x: 0, y: -0.18, z: -0.70 }, wheelRadius: 0.62,
+      wheelWidth: 0.4, wheelZ: [-0.65], trackWidth: 2.34,
+      acceleration: 7.5, braking: 10, lateralGrip: 4.5, angularAcceleration: 5,
+      invertible: true, selfRight: false,
+    },
+    weapon: {
+      kind: 'horizontal-bar', mount: { x: 0, y: -0.30, z: 1.67 }, radius: 1.65,
+      halfWidth: 0.1, spinUpSeconds: 3.2, coastDownSeconds: 8,
+      maxRpm: 2_000, spinDirection: 1, energyLossOnHit: 0.55, gyroStrength: 0.2,
+    },
   },
 };
 
@@ -72,6 +129,9 @@ export const playerSnapshotSchema = z.object({
   id: z.string(), name: z.string(), botId: botIdSchema, paint: paintIdSchema,
   position: vectorSchema, rotation: quaternionSchema, yaw: z.number(),
   velocity: vectorSchema, health: z.number(), weaponCharge: z.number(),
+  angularVelocity: vectorSchema, weaponRpm: z.number(), weaponAngle: z.number(),
+  inverted: z.boolean(), recovering: z.boolean(), recoveryProgress: z.number(),
+  recoveryCooldown: z.number(), wheelSpeedLeft: z.number(), wheelSpeedRight: z.number(),
   weaponActive: z.boolean(), connected: z.boolean(), ready: z.boolean(),
   lastInputSeq: z.number(), damageDealt: z.number(), hits: z.number(),
 });

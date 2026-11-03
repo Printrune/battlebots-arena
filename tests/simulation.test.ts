@@ -1,11 +1,33 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { createSimulation } from '../src/server/simulation';
+import test, { before } from 'node:test';
+import RAPIER from '@dimforge/rapier3d-compat';
+import { createSimulation, RobotPhysics } from '../src/server/simulation';
 import type { Simulation } from '../src/server/simulation';
-import { ARENA, INPUT_TIMEOUT_MS, MATCH_SECONDS, TICK_RATE, matchSnapshotSchema } from '../src/shared/protocol';
-import type { PlayerInput } from '../src/shared/protocol';
+import { ARENA, BOTS, INPUT_TIMEOUT_MS, MATCH_SECONDS, NEUTRAL_INPUT, TICK_RATE, matchSnapshotSchema } from '../src/shared/protocol';
+import type { BotId, PlayerInput } from '../src/shared/protocol';
 
 const DT = 1 / TICK_RATE;
+
+before(async () => {
+  const initialization = await createSimulation('physics-initialization');
+  initialization.dispose();
+});
+
+function fixture(botId: BotId) {
+  const world = new RAPIER.World({ x: 0, y: -19.62, z: 0 });
+  world.timestep = 1 / 60;
+  const ground = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, -0.2, 0));
+  world.createCollider(RAPIER.ColliderDesc.cuboid(50, 0.2, 50).setFriction(0.45), ground);
+  const robot = new RobotPhysics(world, BOTS[botId], { x: 0, y: BOTS[botId].physics.wheelRadius + 0.03, z: 0 }, 0);
+  return { world, robot };
+}
+
+function driveFixture(value: ReturnType<typeof fixture>, seconds: number, input: PlayerInput = NEUTRAL_INPUT) {
+  for (let tick = 0; tick < Math.ceil(seconds * 60); tick += 1) {
+    value.robot.step(1 / 60, input);
+    value.world.step();
+  }
+}
 
 async function twoPlayers(): Promise<Simulation> {
   const simulation = await createSimulation('test-arena');
@@ -156,7 +178,7 @@ test('replacing the first lobby player uses the empty spawn instead of overlappi
   }
 });
 
-test('recovery is edge-triggered and arena containment survives sustained driving', async () => {
+test('upright recovery does not launch the robot and the arena contains sustained driving', async () => {
   const simulation = await twoPlayers();
   try {
     let now = startFight(simulation);
@@ -168,10 +190,192 @@ test('recovery is edge-triggered and arena containment survives sustained drivin
     const snapshot = simulation.snapshot();
     const player = snapshot.players.find((item) => item.id === 'a');
     assert.ok(player);
-    assert.ok(Math.abs(player.position.z) <= ARENA.halfDepth - 1.29);
-    assert.ok(Math.abs(player.position.x) <= ARENA.halfWidth - 0.99);
-    assert.equal(snapshot.events.filter((event) => event.kind === 'recover').length, 1);
+    assert.ok(Math.abs(player.position.z) <= ARENA.halfDepth - 0.84);
+    assert.ok(Math.abs(player.position.x) <= ARENA.halfWidth - 0.84);
+    assert.equal(snapshot.events.filter((event) => event.kind === 'recover').length, 0);
   } finally {
     simulation.dispose();
   }
+});
+
+test('four-wheel Witch Doctor and two-wheel Tombstone have distinct bounded acceleration and spin-up', () => {
+  const doctor = fixture('witchdoctor');
+  const tombstone = fixture('tombstone');
+  try {
+    driveFixture(doctor, 0.5);
+    driveFixture(tombstone, 0.5);
+    const input = { ...NEUTRAL_INPUT, throttle: 1, weapon: true };
+    doctor.robot.step(1 / 60, input);
+    tombstone.robot.step(1 / 60, input);
+    assert.ok(doctor.robot.body.linvel().z <= BOTS.witchdoctor.physics.acceleration / 60 + 0.01);
+    assert.ok(tombstone.robot.body.linvel().z <= BOTS.tombstone.physics.acceleration / 60 + 0.01);
+    doctor.world.step();
+    tombstone.world.step();
+    driveFixture(doctor, 0.5, input);
+    driveFixture(tombstone, 0.5, input);
+    assert.equal(doctor.robot.wheelPositions.length, 4);
+    assert.equal(tombstone.robot.wheelPositions.length, 2);
+    assert.ok(doctor.robot.body.linvel().z > tombstone.robot.body.linvel().z);
+    assert.ok(doctor.robot.weaponCharge > tombstone.robot.weaponCharge);
+    assert.ok(doctor.robot.weaponCharge < 0.5);
+  } finally { doctor.world.free(); tombstone.world.free(); }
+});
+
+test('steering applies torque without snapping away existing roll or pitch', () => {
+  const value = fixture('witchdoctor');
+  try {
+    value.robot.body.setTranslation({ x: 0, y: 1, z: 0 }, true);
+    value.robot.body.setRotation({ x: 0, y: 0, z: Math.sin(0.3), w: Math.cos(0.3) }, true);
+    const rotation = { ...value.robot.body.rotation() };
+    value.robot.step(1 / 60, { ...NEUTRAL_INPUT, steer: 1 });
+    assert.deepEqual({ ...value.robot.body.rotation() }, rotation);
+    value.world.step();
+    assert.ok(Math.abs(value.robot.body.rotation().z) > 0.15);
+  } finally { value.world.free(); }
+});
+
+test('Tombstone drives inverted and has no invented active self-righter', () => {
+  const value = fixture('tombstone');
+  try {
+    value.robot.body.setRotation({ x: 0, y: 0, z: 1, w: 0 }, true);
+    driveFixture(value, 0.7);
+    assert.equal(value.robot.inverted, true);
+    assert.equal(value.robot.step(1 / 60, { ...NEUTRAL_INPUT, recover: true }), false);
+    assert.equal(value.robot.recovering, false);
+    driveFixture(value, 0.8, { ...NEUTRAL_INPUT, throttle: 1 });
+    assert.ok(value.robot.body.linvel().z > 0.5);
+    assert.equal(value.robot.inverted, true);
+  } finally { value.world.free(); }
+});
+
+test('Witch Doctor self-rights through torque over time rather than teleporting upright', () => {
+  const value = fixture('witchdoctor');
+  try {
+    value.robot.body.setTranslation({ x: 0, y: 1.05, z: 0 }, true);
+    value.robot.body.setRotation({ x: 0, y: 0, z: 1, w: 0 }, true);
+    driveFixture(value, 1.2);
+    assert.equal(value.robot.inverted, true);
+    const rotation = { ...value.robot.body.rotation() };
+    const position = { ...value.robot.body.translation() };
+    assert.equal(value.robot.step(1 / 60, { ...NEUTRAL_INPUT, recover: true }), true);
+    assert.deepEqual({ ...value.robot.body.rotation() }, rotation);
+    assert.deepEqual({ ...value.robot.body.translation() }, position);
+    assert.equal(value.robot.recovering, true);
+    assert.ok(value.robot.recoveryCooldown > 4);
+    driveFixture(value, 1.6, { ...NEUTRAL_INPUT, recover: true });
+    assert.ok(value.robot.alignment > 0.5, `Self-righting finished at alignment ${value.robot.alignment}.`);
+    assert.equal(value.robot.step(1 / 60, { ...NEUTRAL_INPUT, recover: true }), false);
+  } finally { value.world.free(); }
+});
+
+test('Witch Doctor retains limited upside-down driving on its rear tires and ears', () => {
+  const value = fixture('witchdoctor');
+  try {
+    value.robot.body.setTranslation({ x: 0, y: 1.05, z: 0 }, true);
+    value.robot.body.setRotation({ x: 0, y: 0, z: 1, w: 0 }, true);
+    driveFixture(value, 1.2);
+    const start = value.robot.body.translation().z;
+    driveFixture(value, 1, { ...NEUTRAL_INPUT, throttle: 1 });
+    assert.equal(value.robot.inverted, true);
+    assert.ok(value.robot.body.translation().z - start > 0.15, 'Rear tires should provide limited inverted motion.');
+    assert.ok(value.robot.body.linvel().z < BOTS.witchdoctor.speed * 0.7);
+  } finally { value.world.free(); }
+});
+
+test('spinner inertia coasts after power is cut and full-speed Witch Doctor turns more slowly', () => {
+  const stopped = fixture('witchdoctor');
+  const spinning = fixture('witchdoctor');
+  try {
+    driveFixture(stopped, 0.5);
+    driveFixture(spinning, 2.2, { ...NEUTRAL_INPUT, weapon: true });
+    assert.ok(spinning.robot.weaponCharge > 0.99);
+    driveFixture(stopped, 0.7, { ...NEUTRAL_INPUT, steer: 1 });
+    driveFixture(spinning, 0.7, { ...NEUTRAL_INPUT, steer: 1, weapon: true });
+    assert.ok(Math.abs(spinning.robot.yaw) < Math.abs(stopped.robot.yaw));
+    driveFixture(spinning, 1);
+    assert.ok(spinning.robot.weaponRpm > 0, 'A heavy unpowered spinner must coast instead of stopping instantly.');
+    driveFixture(spinning, 6);
+    assert.equal(spinning.robot.weaponRpm, 0);
+  } finally { stopped.world.free(); spinning.world.free(); }
+});
+
+test('weapon contacts use the actual swept disc and bar volumes instead of a distance cone', () => {
+  const value = fixture('witchdoctor');
+  try {
+    const target = new RobotPhysics(value.world, BOTS.tombstone, { x: 2.5, y: 0.65, z: 1 }, 0);
+    value.world.step();
+    assert.ok(target.colliders.every((collider) => value.robot.contactWith(collider) === null));
+    target.body.setTranslation({ x: 0, y: 0.65, z: -3 }, true);
+    value.world.step();
+    assert.ok(target.colliders.every((collider) => value.robot.contactWith(collider) === null));
+    target.body.setTranslation({ x: 0, y: 0.65, z: 3 }, true);
+    value.world.step();
+    const contact = target.colliders.map((collider) => value.robot.contactWith(collider)).find((item) => item !== null);
+    assert.ok(contact);
+    assert.ok(contact.tangent.y > 0, 'The upright vertical drisc should bite upward at its front.');
+    value.robot.weaponCharge = 1;
+    const before = value.robot.weaponRpm;
+    value.robot.spendWeaponEnergy(contact.leverage);
+    assert.ok(value.robot.weaponRpm < before);
+    assert.ok(value.robot.weaponCharge > 0);
+    assert.ok(value.robot.weaponCooldown > 0);
+  } finally { value.world.free(); }
+});
+
+test('Tombstone horizontal spinner transfers a sideways cutting direction', () => {
+  const value = fixture('tombstone');
+  try {
+    const target = new RobotPhysics(value.world, BOTS.witchdoctor, { x: 0, y: 0.49, z: 4 }, 0);
+    value.world.step();
+    const contact = target.colliders.map((collider) => value.robot.contactWith(collider)).find((item) => item !== null);
+    assert.ok(contact);
+    assert.ok(Math.abs(contact.tangent.x) > 0.5);
+    assert.ok(Math.abs(contact.tangent.y) < 0.1);
+  } finally { value.world.free(); }
+});
+
+test('broadphase rejects distant robots while retaining the full long-bar contact range', () => {
+  const value = fixture('tombstone');
+  try {
+    const target = new RobotPhysics(value.world, BOTS.witchdoctor, { x: 20, y: 0.49, z: 0 }, 0);
+    assert.equal(value.robot.couldContact(target), false);
+    target.reset({ x: 0, y: 0.49, z: 4.3 }, 0);
+    value.world.propagateModifiedBodyPositionsToColliders();
+    assert.equal(value.robot.couldContact(target), true);
+    assert.ok(target.colliders.some((collider) => value.robot.contactWith(collider) !== null));
+    assert.ok(value.robot.boundingRadius > BOTS.tombstone.weapon.radius + BOTS.tombstone.weapon.mount.z);
+  } finally { value.world.free(); }
+});
+
+test('swept weapon bounds include prior travel and a tilted rotor while clearing the normal floor', () => {
+  const value = fixture('tombstone');
+  try {
+    const standing = value.robot.weaponSweepBounds;
+    assert.ok(standing.min.y > 0);
+    assert.ok(standing.max.z >= BOTS.tombstone.weapon.mount.z + BOTS.tombstone.weapon.radius);
+    value.robot.step(1 / 60, NEUTRAL_INPUT);
+    value.robot.body.setTranslation({ x: 12, y: 0.65, z: 0 }, true);
+    value.robot.body.setRotation({ x: Math.SQRT1_2, y: 0, z: 0, w: Math.SQRT1_2 }, true);
+    const moved = value.robot.weaponSweepBounds;
+    assert.ok(moved.min.x <= -BOTS.tombstone.weapon.radius);
+    assert.ok(moved.max.x > ARENA.halfWidth);
+    assert.ok(moved.min.y < 0);
+  } finally { value.world.free(); }
+});
+
+test('a spinning weapon hitting an arena wall spends energy and emits an arena contact', async () => {
+  const simulation = await twoPlayers();
+  try {
+    let now = startFight(simulation);
+    for (let tick = 1; tick <= TICK_RATE * 14; tick += 1) {
+      now += DT * 1000;
+      const player = simulation.snapshot().players.find((item) => item.id === 'b');
+      assert.ok(player);
+      const angle = Math.atan2(Math.sin(Math.PI / 2 - player.yaw), Math.cos(Math.PI / 2 - player.yaw));
+      simulation.setInput('b', { seq: tick, throttle: Math.abs(angle) < 0.3 ? 0.85 : 0,
+        steer: Math.max(-1, Math.min(1, angle * 2)), weapon: true, recover: false }, now);
+      simulation.step(DT, now);
+    }
+    assert.ok(simulation.snapshot().events.some((event) => event.targetId === 'arena'), JSON.stringify(simulation.snapshot()));
+  } finally { simulation.dispose(); }
 });

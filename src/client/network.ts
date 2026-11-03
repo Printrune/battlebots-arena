@@ -87,6 +87,7 @@ export function createConnection(options: ConnectionOptions) {
     },
     sendInput(input: PlayerInput) { if (connected) room?.send('input', input); },
     ready() { if (connected) room?.send('ready'); },
+    pulverize() { if (connected) room?.send('pulverize'); },
     rematch() { if (connected) room?.send('rematch'); },
     ping() { if (connected) room?.ping(() => undefined); },
     async leave() {

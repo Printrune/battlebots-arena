@@ -141,7 +141,7 @@ test('forfeit has one winner and rematch restores the arena without stale input'
     assert.deepEqual(snapshot.events, []);
     const playerA = snapshot.players.find((player) => player.id === 'a');
     assert.ok(playerA);
-    assert.equal(playerA.position.z, -7);
+    assert.equal(playerA.position.z, -ARENA.spawnZ);
     assert.equal(playerA.lastInputSeq, 7);
     assert.equal(playerA.velocity.z, 0);
   } finally {
@@ -171,8 +171,8 @@ test('replacing the first lobby player uses the empty spawn instead of overlappi
     simulation.removePlayer('a');
     simulation.addPlayer('c', 'New Driver', { botId: 'witchdoctor', paint: 'glacier' });
     const snapshot = simulation.snapshot();
-    assert.equal(snapshot.players.find((player) => player.id === 'b')?.position.z, 7);
-    assert.equal(snapshot.players.find((player) => player.id === 'c')?.position.z, -7);
+    assert.equal(snapshot.players.find((player) => player.id === 'b')?.position.z, ARENA.spawnZ);
+    assert.equal(snapshot.players.find((player) => player.id === 'c')?.position.z, -ARENA.spawnZ);
   } finally {
     simulation.dispose();
   }
@@ -354,7 +354,7 @@ test('swept weapon bounds include prior travel and a tilted rotor while clearing
     assert.ok(standing.min.y > 0);
     assert.ok(standing.max.z >= BOTS.tombstone.weapon.mount.z + BOTS.tombstone.weapon.radius);
     value.robot.step(1 / 60, NEUTRAL_INPUT);
-    value.robot.body.setTranslation({ x: 12, y: 0.65, z: 0 }, true);
+    value.robot.body.setTranslation({ x: ARENA.halfWidth - 1, y: 0.65, z: 0 }, true);
     value.robot.body.setRotation({ x: Math.SQRT1_2, y: 0, z: 0, w: Math.SQRT1_2 }, true);
     const moved = value.robot.weaponSweepBounds;
     assert.ok(moved.min.x <= -BOTS.tombstone.weapon.radius);

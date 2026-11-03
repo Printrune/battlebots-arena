@@ -1,12 +1,13 @@
 import { z } from 'zod';
+import { ARENA_LAYOUT, ARENA_MATCH_SECONDS, arenaStateSchema } from './arena';
 
 export const TICK_RATE = 30;
 export const SNAPSHOT_RATE = 15;
-export const MATCH_SECONDS = 120;
+export const MATCH_SECONDS = ARENA_MATCH_SECONDS;
 export const COUNTDOWN_SECONDS = 3;
 export const RECONNECT_SECONDS = 15;
 export const INPUT_TIMEOUT_MS = 350;
-export const ARENA = { halfWidth: 13, halfDepth: 17, wallHeight: 2.5 };
+export const ARENA = ARENA_LAYOUT;
 
 export const botIdSchema = z.enum(['witchdoctor', 'tombstone']);
 export type BotId = z.infer<typeof botIdSchema>;
@@ -127,6 +128,7 @@ export const vectorSchema = z.object({ x: z.number(), y: z.number(), z: z.number
 export const quaternionSchema = vectorSchema.extend({ w: z.number() });
 export const playerSnapshotSchema = z.object({
   id: z.string(), name: z.string(), botId: botIdSchema, paint: paintIdSchema,
+  spawnSlot: z.union([z.literal(0), z.literal(1)]),
   position: vectorSchema, rotation: quaternionSchema, yaw: z.number(),
   velocity: vectorSchema, health: z.number(), weaponCharge: z.number(),
   angularVelocity: vectorSchema, weaponRpm: z.number(), weaponAngle: z.number(),
@@ -148,13 +150,14 @@ export const matchPhaseSchema = z.discriminatedUnion('kind', [
 ]);
 export type MatchPhase = z.infer<typeof matchPhaseSchema>;
 export const matchEventSchema = z.object({
-  id: z.number(), kind: z.enum(['hit', 'recover']), sourceId: z.string(),
+  id: z.number(), kind: z.enum(['hit', 'recover', 'hazard']), sourceId: z.string(),
   targetId: z.string(), position: vectorSchema, strength: z.number(),
 });
 export type MatchEvent = z.infer<typeof matchEventSchema>;
 export const matchSnapshotSchema = z.object({
   roomId: z.string(), tick: z.number(), phase: matchPhaseSchema,
   players: z.array(playerSnapshotSchema), events: z.array(matchEventSchema),
+  arena: arenaStateSchema,
 });
 export type MatchState = z.infer<typeof matchSnapshotSchema>;
 
@@ -168,6 +171,7 @@ export interface ArenaRenderer {
   update(snapshot: MatchState, localId: string | null): void;
   setInput(input: PlayerInput): void;
   setPreview(botId: BotId, paint: PaintId): void;
+  setOverview(enabled: boolean): void;
   setMuted(muted: boolean): void;
   dispose(): void;
 }

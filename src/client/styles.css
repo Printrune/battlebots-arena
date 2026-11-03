@@ -69,6 +69,9 @@ h1 span { color: var(--amber); }
 .live-pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #ffffff25; background: #12171991; font-size: 8px; letter-spacing: 1.5px; color: #c3cecb; font-weight: 600; }
 .live-pill i { width: 4px; height: 4px; }
 .arena-coordinate { font-family: monospace; font-size: 9px; letter-spacing: 1.5px; color: #74807f; }
+.arena-view-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 29px; padding: 6px 9px; background: #121719b8; border: 1px solid #a3b2984d; color: #cad5be; font-size: 7px; font-weight: 600; letter-spacing: 1px; }
+.arena-view-toggle:hover { color: #f6d590; border-color: #c9b576; background: #22261cce; }
+.arena-view-toggle[aria-pressed="true"] { color: #efca7a; border-color: #c4a45880; }
 .preview-reticle { height: 13px; width: 13px; position: absolute; border-color: #a8b4ad; border-style: solid; z-index: 3; opacity: .45; pointer-events: none; }
 .preview-reticle--tl { top: 66px; left: 24px; border-width: 1px 0 0 1px; }
 .preview-reticle--br { bottom: 139px; right: 24px; border-width: 0 1px 1px 0; }
@@ -201,6 +204,15 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
 .connection-label i { width: 3px; height: 3px; }
 .connection-label--lost { color: var(--amber); }
 .connection-label--lost i { background: var(--amber); }
+.arena-hazards { position: absolute; z-index: 4; top: 126px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 15px; padding: 8px 11px; background: #101812a8; border: 1px solid #9eae912e; color: #a3b098; font-size: 8px; font-weight: 600; letter-spacing: 1px; white-space: nowrap; pointer-events: none; }
+.arena-hazards > span { display: flex; align-items: center; gap: 5px; }
+.arena-hazards strong { color: #ced8bd; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hazard-saws > i { width: 4px; height: 4px; border-radius: 50%; background: #7a8c70; flex: 0 0 auto; }
+.hazard-screws { border-left: 1px solid #b2c29629; padding-left: 14px; }
+.arena-hazards--warning { border-color: #d6b95f6b; }
+.arena-hazards--warning .hazard-saws strong, .arena-hazards--cutting .hazard-saws strong { color: #f6c875; }
+.arena-hazards--warning .hazard-saws > i, .arena-hazards--cutting .hazard-saws > i { background: #f6b83e; box-shadow: 0 0 9px #f6b83e68; }
+.arena-hazards--cutting { background: #352615bf; border-color: #e7a73d80; }
 .match-utility { position: absolute; top: 135px; right: max(34px, env(safe-area-inset-right)); display: flex; gap: 8px; z-index: 12; }
 .match-utility .icon-button { background: #111816af; border-color: #7b92814d; width: 33px; height: 33px; color: #a6bba8; }
 .match-overlay { position: absolute; inset: 0; z-index: 8; display: flex; align-items: center; justify-content: center; background: #09110d66; backdrop-filter: blur(3px); padding: 110px 25px 35px; overflow: auto; }
@@ -248,6 +260,14 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
 .joystick-mark--left { left: 11px; top: calc(50% - 7px); }
 .joystick-mark--right { right: 11px; top: calc(50% - 7px); }
 .weapon-controls { display: flex; align-items: flex-end; gap: 24px; pointer-events: auto; }
+.aux-controls { display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.aux-controls .recover-control { margin-bottom: 0; }
+.pulverizer-control { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 76px; min-height: 57px; gap: 3px; padding: 7px 3px; background: #2b281dd4; color: #d2bc83; border: 1px solid #ac946173; border-radius: 5px; touch-action: manipulation; }
+.pulverizer-control > span { font-size: 7px; font-weight: 600; letter-spacing: .5px; }
+.pulverizer-control > small { display: flex; align-items: center; gap: 4px; font-size: 7px; letter-spacing: .6px; font-variant-numeric: tabular-nums; }
+.pulverizer-control kbd { padding: 1px 3px; font-size: 5px; min-width: 12px; color: #d8c49b; border-color: #b8a07155; }
+.pulverizer-control:hover:not(:disabled) { border-color: #e2be70; background: #4a3b22dd; }
+.pulverizer-control--moving { color: #f6d18b; }
 .weapon-control { position: relative; width: 120px; height: 120px; border-radius: 50%; border: 1px solid #d4ba7990; background: #362f1ec9; color: #ecd19c; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; touch-action: manipulation; box-shadow: inset 0 0 0 7px #c4a26b0b, 0 5px 30px #0003; }
 .weapon-control--active { border-color: #ffd16e; color: #ffcd6c; background: #876027bb; box-shadow: inset 0 0 0 7px #ffc56814, 0 0 25px #e9ac352b; }
 .weapon-control > span { font-size: 9px; font-weight: 700; letter-spacing: 1px; }
@@ -363,11 +383,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .match-clock strong { font-size: 36px; }
   .match-clock > span:first-child { font-size: 6px; letter-spacing: .8px; }
   .match-utility { top: 105px; right: 20px; gap: 6px; }
+  .arena-hazards { top: 108px; padding: 7px 9px; gap: 10px; font-size: 7px; letter-spacing: .6px; }
+  .hazard-screws { padding-left: 9px; }
   .touch-controls { bottom: 22px; left: 24px; right: 24px; }
   .joystick { width: 112px; height: 112px; }
   .weapon-control { width: 105px; height: 105px; }
   .weapon-controls { gap: 17px; }
   .recover-control { width: 65px; height: 65px; }
+  .pulverizer-control { width: 65px; min-height: 51px; padding: 5px 3px; }
+  .pulverizer-control > span { font-size: 6px; }
+  .pulverizer-control > svg { width: 18px; height: 18px; }
   .drive-control > span kbd, .weapon-control > kbd { display: none; }
   .match-overlay { padding-top: 100px; }
 }
@@ -395,6 +420,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .preview-corner { top: 16px; left: 16px; right: 16px; }
   .live-pill { padding: 7px 8px; font-size: 6px; letter-spacing: 1px; }
   .arena-coordinate { font-size: 6px; letter-spacing: .7px; }
+  .arena-view-toggle { min-height: 27px; padding: 6px 7px; gap: 5px; font-size: 6px; letter-spacing: .6px; }
   .preview-reticle--tl { top: 56px; left: 16px; }
   .preview-reticle--br { bottom: 120px; right: 16px; }
   .preview-info { left: 16px; right: 17px; bottom: 55px; }
@@ -456,6 +482,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .match-clock strong { font-size: 31px; }
   .match-clock > span:first-child { font-size: 5px; letter-spacing: .3px; }
   .match-utility { top: max(115px, calc(env(safe-area-inset-top) + 100px)); right: 13px; }
+  .arena-hazards { top: max(115px, calc(env(safe-area-inset-top) + 100px)); left: 13px; transform: none; gap: 8px; padding: 8px; font-size: 7px; letter-spacing: .4px; }
+  .hazard-screws { padding-left: 8px; }
   .match-utility .icon-button { width: 30px; height: 30px; }
   .match-overlay { padding: 160px 16px 160px; }
   .lobby-panel, .result-panel { padding: 24px 20px 19px; }
@@ -473,6 +501,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .recover-control { width: 57px; height: 57px; gap: 5px; }
   .recover-control > span { font-size: 5px; }
   .recover-control > svg { width: 19px; height: 19px; }
+  .aux-controls { gap: 8px; }
+  .pulverizer-control { width: 61px; min-height: 49px; gap: 3px; padding: 5px 2px; }
+  .pulverizer-control > svg { width: 17px; height: 17px; }
+  .pulverizer-control > span { font-size: 6px; letter-spacing: .2px; }
+  .pulverizer-control > small { font-size: 6px; }
   .drive-control > span { font-size: 6px; }
   .rotate-hint { position: absolute; bottom: 155px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; width: max-content; max-width: calc(100% - 30px); color: #d1ddc5; background: #182014c2; padding: 8px 12px; border: 1px solid #b0c39b2b; font-size: 8px; z-index: 5; pointer-events: none; }
   .rotate-hint svg { width: 18px; }
@@ -492,6 +525,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .match-clock strong { font-size: 30px; }
   .match-clock > span:first-child { font-size: 5px; }
   .match-utility { top: 88px; right: max(22px, env(safe-area-inset-right)); gap: 5px; }
+  .arena-hazards { top: 86px; left: 50%; transform: translateX(-50%); padding: 6px 9px; gap: 10px; font-size: 7px; }
+  .hazard-screws { padding-left: 10px; }
   .match-utility .icon-button { height: 28px; width: 28px; }
   .match-utility .icon-button svg { height: 15px; width: 15px; }
   .touch-controls { bottom: max(15px, env(safe-area-inset-bottom)); left: max(25px, env(safe-area-inset-left)); right: max(25px, env(safe-area-inset-right)); }
@@ -504,6 +539,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .weapon-control > span { font-size: 7px; }
   .recover-control { height: 61px; width: 61px; gap: 6px; }
   .recover-control > span { font-size: 5px; }
+  .aux-controls { gap: 8px; }
+  .pulverizer-control { width: 61px; min-height: 47px; gap: 2px; padding: 4px 2px; }
+  .pulverizer-control > svg { width: 17px; height: 17px; }
+  .pulverizer-control > span, .pulverizer-control > small { font-size: 6px; }
   .weapon-controls { gap: 18px; }
   .rotate-hint { display: none; }
   .match-overlay { padding: 71px 20px 14px; }

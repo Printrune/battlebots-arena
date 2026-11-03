@@ -9,6 +9,7 @@ import { sessionValid, SESSION_COOKIE } from './auth';
 import type { AuthConfig } from './auth';
 import { createSimulation } from './simulation';
 import type { Simulation } from './simulation';
+import { PULVERIZERS, pulverizerHead } from '../shared/arena';
 
 interface RoomDependencies { auth: AuthConfig; maxRooms: number }
 export const roomMetrics = {
@@ -61,6 +62,11 @@ export function createArenaRoom(dependencies: RoomDependencies) {
       this.onMessage('ready', (client) => {
         if (!this.allowMessage(client.sessionId)) return;
         this.simulation.setReady(client.sessionId, true);
+        this.publish();
+      });
+      this.onMessage('pulverize', (client) => {
+        if (!this.allowMessage(client.sessionId)) return;
+        this.simulation.pulverize(client.sessionId);
         this.publish();
       });
       this.onMessage('rematch', (client) => {
@@ -179,6 +185,11 @@ export function createArenaRoom(dependencies: RoomDependencies) {
       const bot = snapshot.players.find((player) => player.id === 'practice-bot');
       const human = snapshot.players.find((player) => player.id !== 'practice-bot');
       if (!bot || !human) return;
+      if (PULVERIZERS.some((definition) => {
+        if (definition.ownerSlot !== bot.spawnSlot) return false;
+        const head = pulverizerHead(definition, 1.22);
+        return Math.hypot(human.position.x - head.x, human.position.z - head.z) < 3 && human.position.y < 2;
+      })) this.simulation.pulverize(bot.id);
       const desired = Math.atan2(human.position.x - bot.position.x, human.position.z - bot.position.z);
       const angle = Math.atan2(Math.sin(desired - bot.yaw), Math.cos(desired - bot.yaw));
       const distance = Math.hypot(human.position.x - bot.position.x, human.position.z - bot.position.z);

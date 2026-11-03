@@ -6,6 +6,8 @@ import type {
   BotDefinition, CosmeticSelection, MatchEvent, MatchPhase, MatchResult, MatchState,
   PlayerInput, PlayerSnapshot,
 } from '../shared/protocol';
+import { ArenaHazards } from './arena-hazards';
+import type { HazardHit, HazardRobot } from './arena-hazards';
 
 type Body = InstanceType<typeof RAPIER.RigidBody>;
 type Collider = InstanceType<typeof RAPIER.Collider>;
@@ -321,7 +323,11 @@ export class RobotPhysics {
     const position = this.body.translation();
     const contacts = this.wheelPositions.filter((wheel) => {
       const point = add(position, rotate(rotation, wheel));
-      return point.y >= -0.05 && point.y - physical.wheelRadius < 0.14;
+      const deck = ARENA.upperDeck;
+      const supportedByDeck = Math.abs(point.x - deck.x) <= deck.width / 2 &&
+        Math.abs(point.z - deck.z) <= deck.depth / 2 && point.y > deck.height;
+      const supportHeight = supportedByDeck ? deck.height : 0;
+      return point.y >= supportHeight - 0.05 && point.y - physical.wheelRadius - supportHeight < 0.14;
     }).length;
     const driveOrientation = this.alignment > 0.28 || (physical.invertible && this.alignment < -0.28);
     const fraction = driveOrientation ? contacts / this.wheelPositions.length : 0;
@@ -422,6 +428,7 @@ export class Simulation {
   private readonly world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
   private readonly players = new Map<string, Participant>();
   private readonly arenaColliders: { collider: Collider; boundary: ArenaBoundary }[] = [];
+  private readonly hazards: ArenaHazards;
   private phase: MatchPhase = { kind: 'lobby' };
   private tick = 0;
   private eventId = 0;
@@ -440,11 +447,12 @@ export class Simulation {
       { x: 0, z: ARENA.halfDepth + 0.3, hx: ARENA.halfWidth + 1, hz: 0.3, boundary: 'south' },
     ];
     for (const wall of walls) {
-      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(wall.x, 2, wall.z));
+      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(wall.x, ARENA.wallHeight / 2, wall.z));
       this.arenaColliders.push({ collider: this.world.createCollider(
-        RAPIER.ColliderDesc.cuboid(wall.hx, 2, wall.hz).setRestitution(0.12).setFriction(0.3), body,
+        RAPIER.ColliderDesc.cuboid(wall.hx, ARENA.wallHeight / 2, wall.hz).setRestitution(0.12).setFriction(0.3), body,
       ), boundary: wall.boundary });
     }
+    this.hazards = new ArenaHazards(this.world);
   }
 
   addPlayer(id: string, name: string, selection: CosmeticSelection): void {
@@ -453,7 +461,7 @@ export class Simulation {
     const slot = [...this.players.values()].some((player) => player.spawnSlot === 0) ? 1 : 0;
     const definition = BOTS[selection.botId];
     const physics = new RobotPhysics(this.world, definition,
-      { x: 0, y: definition.physics.wheelRadius + 0.03, z: slot === 0 ? -7 : 7 }, slot === 0 ? 0 : Math.PI);
+      { x: 0, y: definition.physics.wheelRadius + 0.03, z: slot === 0 ? -ARENA.spawnZ : ARENA.spawnZ }, slot === 0 ? 0 : Math.PI);
     this.players.set(id, {
       id, spawnSlot: slot, name, selection: { ...selection }, physics, health: 100,
       ready: false, connected: true, input: { ...NEUTRAL_INPUT }, inputAt: -Infinity,
@@ -494,6 +502,12 @@ export class Simulation {
     player.lastInputSeq = input.seq;
   }
 
+  pulverize(id: string): boolean {
+    const player = this.players.get(id);
+    return this.phase.kind === 'fighting' && !!player && player.connected && player.health > 0
+      ? this.hazards.trigger(player.spawnSlot) : false;
+  }
+
   step(dt: number, nowMs: number): void {
     if (this.disposed) return;
     this.tick += 1;
@@ -514,6 +528,7 @@ export class Simulation {
     // Two 60 Hz physics substeps keep wheel contact and fast swept weapons stable
     // while retaining the public 30 Hz authoritative input/network contract.
     this.world.timestep = dt / 2;
+    const elapsedBefore = MATCH_SECONDS - this.phase.seconds;
     for (let substep = 0; substep < 2; substep += 1) {
       for (const player of this.players.values()) {
         const input = player.connected && nowMs - player.inputAt <= INPUT_TIMEOUT_MS ? player.input : NEUTRAL_INPUT;
@@ -527,6 +542,10 @@ export class Simulation {
       // Capture every eligible attack before mutating health: mutual KOs are fair.
       for (const hit of this.findHits()) this.applyHit(hit);
       for (const player of this.players.values()) this.hitArena(player);
+      const robots: HazardRobot[] = [...this.players.values()].map((player) => ({
+        id: player.id, slot: player.spawnSlot, physics: player.physics,
+      }));
+      for (const hit of this.hazards.step(dt / 2, elapsedBefore + (substep + 1) * dt / 2, robots)) this.applyHazardHit(hit);
     }
     const survivors = [...this.players.values()].filter((player) => player.health > 0);
     if (survivors.length < this.players.size) {
@@ -610,25 +629,40 @@ export class Simulation {
   private hitArena(player: Participant): void {
     if (!player.physics.canStrike || player.physics.weaponCharge < 0.3) return;
     const bounds = player.physics.weaponSweepBounds;
+    const deck = ARENA.upperDeck;
+    const touchesDeckBounds = bounds.min.x <= deck.x + deck.width / 2 && bounds.max.x >= deck.x - deck.width / 2 &&
+      bounds.min.z <= deck.z + deck.depth / 2 && bounds.max.z >= deck.z - deck.depth / 2 && bounds.min.y <= deck.height && bounds.max.y >= 0;
     if (bounds.min.x > -ARENA.halfWidth && bounds.max.x < ARENA.halfWidth &&
-      bounds.min.z > -ARENA.halfDepth && bounds.max.z < ARENA.halfDepth && bounds.min.y > 0) return;
+      bounds.min.z > -ARENA.halfDepth && bounds.max.z < ARENA.halfDepth && bounds.min.y > 0 && !touchesDeckBounds) return;
+    let contact: WeaponContact | null = null;
     for (const arena of this.arenaColliders) {
       if (arena.boundary === 'floor' && (bounds.min.y > 0 || Math.abs(player.physics.alignment) > 0.65)) continue;
       if (arena.boundary === 'west' && bounds.min.x > -ARENA.halfWidth) continue;
       if (arena.boundary === 'east' && bounds.max.x < ARENA.halfWidth) continue;
       if (arena.boundary === 'north' && bounds.min.z > -ARENA.halfDepth) continue;
       if (arena.boundary === 'south' && bounds.max.z < ARENA.halfDepth) continue;
-      const contact = player.physics.contactWith(arena.collider);
-      if (!contact) continue;
-      const energy = player.physics.weaponCharge ** 2;
-      const impulse = scale(normalize(add(contact.normal, scale(contact.tangent, -0.25))),
-        player.physics.body.mass() * Math.min(3.5, 3.2 * energy * contact.leverage));
-      player.physics.body.applyImpulseAtPoint(impulse, player.physics.weaponMount, true);
-      player.physics.spendWeaponEnergy(contact.leverage);
-      this.addEvent({ kind: 'hit', sourceId: player.id, targetId: 'arena', position: contact.point,
-        strength: clamp(energy * contact.leverage, 0.1, 1) });
-      break;
+      contact = player.physics.contactWith(arena.collider);
+      if (contact) break;
     }
+    if (!contact && touchesDeckBounds) contact = player.physics.contactWith(this.hazards.deckCollider);
+    if (!contact) return;
+    const energy = player.physics.weaponCharge ** 2;
+    const impulse = scale(normalize(add(contact.normal, scale(contact.tangent, -0.25))),
+      player.physics.body.mass() * Math.min(3.5, 3.2 * energy * contact.leverage));
+    player.physics.body.applyImpulseAtPoint(impulse, player.physics.weaponMount, true);
+    player.physics.spendWeaponEnergy(contact.leverage);
+    this.addEvent({ kind: 'hit', sourceId: player.id, targetId: 'arena', position: contact.point,
+      strength: clamp(energy * contact.leverage, 0.1, 1) });
+  }
+
+  private applyHazardHit(hit: HazardHit): void {
+    const player = this.players.get(hit.robotId);
+    if (!player || player.health <= 0) return;
+    const delivered = Math.min(hit.damage, player.health);
+    player.health = Math.max(0, player.health - hit.damage);
+    const owner = hit.ownerSlot === null ? undefined : [...this.players.values()].find((item) => item.spawnSlot === hit.ownerSlot);
+    if (owner && owner.id !== player.id) owner.damageDealt += delivered;
+    this.addEvent({ kind: 'hazard', sourceId: hit.hazardId, targetId: player.id, position: hit.position, strength: hit.strength });
   }
 
   private addEvent(event: Omit<MatchEvent, 'id'>): void {
@@ -639,6 +673,7 @@ export class Simulation {
   private finish(result: MatchResult): void {
     if (this.phase.kind === 'finished') return;
     this.phase = { kind: 'finished', result };
+    this.hazards.freeze();
     for (const player of this.players.values()) {
       player.input = { ...NEUTRAL_INPUT, seq: player.lastInputSeq };
       player.physics.weaponCharge = 0;
@@ -657,9 +692,10 @@ export class Simulation {
     if (this.phase.kind !== 'finished') return;
     this.phase = { kind: 'lobby' };
     this.events = [];
+    this.hazards.reset();
     for (const player of this.players.values()) {
       const physical = player.physics.definition.physics;
-      player.physics.reset({ x: 0, y: physical.wheelRadius + 0.03, z: player.spawnSlot === 0 ? -7 : 7 }, player.spawnSlot === 0 ? 0 : Math.PI);
+      player.physics.reset({ x: 0, y: physical.wheelRadius + 0.03, z: player.spawnSlot === 0 ? -ARENA.spawnZ : ARENA.spawnZ }, player.spawnSlot === 0 ? 0 : Math.PI);
       player.health = 100;
       player.ready = false;
       player.input = { ...NEUTRAL_INPUT, seq: player.lastInputSeq };
@@ -673,7 +709,7 @@ export class Simulation {
       roomId: this.roomId, tick: this.tick,
       phase: this.phase.kind === 'finished' ? { kind: 'finished', result: { ...this.phase.result } } : { ...this.phase },
       players: [...this.players.values()].map((player) => ({
-        id: player.id, name: player.name, ...player.selection,
+        id: player.id, spawnSlot: player.spawnSlot, name: player.name, ...player.selection,
         position: { ...player.physics.body.translation() }, rotation: { ...player.physics.body.rotation() },
         yaw: player.physics.yaw, velocity: { ...player.physics.body.linvel() },
         angularVelocity: { ...player.physics.body.angvel() }, health: player.health,
@@ -686,6 +722,7 @@ export class Simulation {
         damageDealt: player.damageDealt, hits: player.hits,
       })),
       events: this.events.map((event) => ({ ...event, position: { ...event.position } })),
+      arena: this.hazards.snapshot(),
     };
   }
   dispose(): void {

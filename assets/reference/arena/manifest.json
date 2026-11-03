@@ -1,0 +1,50 @@
+[
+  {
+    "file": "official-guide-battlebox.jpg",
+    "imageUrl": "https://embed.cdn.pais.scholastic.com/v1/products/identifiers/isbn/9781338822021/see-inside/10/renditions/1600",
+    "pageUrl": "https://shop.scholastic.com/parent-ecommerce/books/battlebots-official-guide-9781338822021.html",
+    "caption": "BattleBots Official Guide, printed page 12. Primary licensed source for final-minute killsaws, four team-controlled corner pulverizers, floor slots, and yellow spike strips.",
+    "credit": "Scholastic, BattleBots Official Guide, ISBN 9781338822021",
+    "format": "jpeg",
+    "width": 1067,
+    "height": 1600,
+    "bytes": 308931,
+    "sha256": "fa56a83f53efb16bcb8e25e0abae71213101e98158b2ad1f0f6fb2b3ca89a697"
+  },
+  {
+    "file": "official-guide-hazards.jpg",
+    "imageUrl": "https://embed.cdn.pais.scholastic.com/v1/products/identifiers/isbn/9781338822021/see-inside/11/renditions/1600",
+    "pageUrl": "https://shop.scholastic.com/parent-ecommerce/books/battlebots-official-guide-9781338822021.html",
+    "caption": "BattleBots Official Guide, printed page 13. Shows serrated steel screws, paired saw blades, and the Upper Deck front edge with two screw shafts and central housing.",
+    "credit": "Scholastic, BattleBots Official Guide, ISBN 9781338822021",
+    "format": "jpeg",
+    "width": 1067,
+    "height": 1600,
+    "bytes": 337538,
+    "sha256": "e6c8297eca8531269a2c2fd9645dff48e0c0f13cc0f01cc49b56b9aaa9498e63"
+  },
+  {
+    "file": "wcvii-production-wide.jpg",
+    "imageUrl": "https://images.squarespace-cdn.com/content/v1/63647883ab15f346fd0e1c7c/1673328712921-8SAQ2NMKNC9H1UZZSK7R/BattleBots%2Bnightlight%2Bstudios.jpg",
+    "pageUrl": "https://www.nightlight.tv/projects/battlebots",
+    "caption": "Wide exterior arena photograph published by Nightlight Studios on its 2022 BattleBots production project page. Shows clear wall panels, steel enclosure grid, entry platform, roof truss, audience seating, and red/blue venue lighting.",
+    "credit": "Nightlight Studios",
+    "format": "jpeg",
+    "width": 1600,
+    "height": 1068,
+    "bytes": 432427,
+    "sha256": "7d74cc93bc191b62701ad53e3f5c93843bef1f06cfa7e356392e099679d6c026"
+  },
+  {
+    "file": "wcvii-huge-skorpios-floor.jpg",
+    "imageUrl": "https://images.squarespace-cdn.com/content/v1/5d365e89644809000105ce08/3d405458-3546-4f9b-bda1-3f82283a065c/BB2022-EP716-Skorpios-vs-Huge-_JB96782-33-photographer-Jon-C-R-Bennett.jpg?format=1500w",
+    "pageUrl": "https://hugebattlebots.com/team-huge-battlebots-blog/huge-vs-skorpios",
+    "caption": "World Championship VII fight photograph published by Team HUGE, May 4, 2023. Shows heavily scuffed dark floor, bare-metal scratches, white markings, inset yellow slot borders, yellow spike-strip panels, and clear walls.",
+    "credit": "Jon C. R. Bennett, published by Team HUGE",
+    "format": "jpeg",
+    "width": 1500,
+    "height": 1000,
+    "bytes": 374707,
+    "sha256": "d37066a577abefc9f3c23a1b36dadf71e15b84d3d60763b16c5f0614d88ce35d"
+  }
+]

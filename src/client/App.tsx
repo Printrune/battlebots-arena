@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { z } from 'zod';
-import { BOTS, NEUTRAL_INPUT, PAINTS, paintColor } from '../shared/protocol';
+import { BOTS, MATCH_SECONDS, NEUTRAL_INPUT, PAINTS, paintColor } from '../shared/protocol';
+import { KILLSAW_UNLOCK_SECONDS, PULVERIZERS } from '../shared/arena';
 import type { ArenaRenderer, BotId, JoinOptions, MatchState, PaintId, PlayerInput, PlayerSnapshot } from '../shared/protocol';
 import { createConnection } from './network';
 import type { ConnectionStatus } from './network';
@@ -87,6 +88,7 @@ export function App() {
   const [error, setError] = useState('');
   const [rendererReady, setRendererReady] = useState(false);
   const [rendererError, setRendererError] = useState('');
+  const [overview, setOverview] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinCode, setJoinCode] = useState(initialRoom);
@@ -103,6 +105,14 @@ export function App() {
   const botVersion = botId === 'witchdoctor' ? 'WCVII · 2023' : 'CLASSIC · 2021';
   const phase = snapshot?.phase;
   const fighting = phase?.kind === 'fighting';
+  const ownedHammerIds = PULVERIZERS.filter((hammer) => hammer.ownerSlot === local?.spawnSlot).map((hammer) => hammer.id);
+  const hammers = snapshot?.arena.hazards.filter((hazard) => hazard.kind === 'pulverizer' && ownedHammerIds.includes(hazard.id)) ?? [];
+  const hammerCooldown = hammers.reduce((maximum, hazard) => hazard.kind === 'pulverizer' ? Math.max(maximum, hazard.cooldown) : maximum, 0);
+  const hammerMoving = hammers.some((hazard) => hazard.kind === 'pulverizer' && hazard.phase !== 'idle');
+  const saws = snapshot?.arena.hazards.filter((hazard) => hazard.kind === 'killsaw') ?? [];
+  const sawWarning = saws.some((hazard) => hazard.kind === 'killsaw' && hazard.phase === 'warning');
+  const sawCutting = saws.some((hazard) => hazard.kind === 'killsaw' && hazard.phase === 'cutting');
+  const sawUnlockIn = Math.max(0, KILLSAW_UNLOCK_SECONDS - (snapshot?.arena.elapsed ?? 0));
   const inviteUrl = roomId ? `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}` : '';
 
   const resetInput = useCallback(() => {
@@ -157,6 +167,7 @@ export function App() {
   }, [botId, paint, inRoom, rendererReady]);
 
   useEffect(() => { renderer.current?.setMuted(muted); }, [muted, rendererReady]);
+  useEffect(() => { renderer.current?.setOverview(overview); }, [overview, rendererReady]);
 
   const checkSession = useCallback(async () => {
     setAuthentication('checking'); setAuthError('');
@@ -224,18 +235,24 @@ export function App() {
     recoveryTimer.current = setTimeout(() => { input.current.recover = false; }, 150);
   }, []);
 
+  const pulverize = useCallback(() => {
+    if (currentSnapshot.current?.phase.kind === 'fighting') connection.current?.pulverize();
+  }, []);
+
   useEffect(() => {
     function updateDrive() {
       input.current.throttle = (keys.current.has('w') || keys.current.has('arrowup') ? 1 : 0) - (keys.current.has('s') || keys.current.has('arrowdown') ? 1 : 0);
       input.current.steer = (keys.current.has('d') || keys.current.has('arrowright') ? 1 : 0) - (keys.current.has('a') || keys.current.has('arrowleft') ? 1 : 0);
+      renderer.current?.setInput({ ...input.current });
     }
     function keyDown(event: KeyboardEvent) {
       if (!activeRoom.current || helpOpen || event.metaKey || event.ctrlKey || event.altKey || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       const key = event.key.toLowerCase();
-      if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'r'].includes(key)) event.preventDefault();
+      if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'r', 'h'].includes(key)) event.preventDefault();
       keys.current.add(key); updateDrive();
       if (!event.repeat && key === ' ') toggleWeapon();
       if (!event.repeat && key === 'r') recover();
+      if (!event.repeat && key === 'h') pulverize();
     }
     function keyUp(event: KeyboardEvent) { keys.current.delete(event.key.toLowerCase()); updateDrive(); }
     function hide() { if (document.visibilityState !== 'visible') resetInput(); }
@@ -246,7 +263,7 @@ export function App() {
       window.removeEventListener('blur', resetInput); document.removeEventListener('visibilitychange', hide);
       if (recoveryTimer.current) clearTimeout(recoveryTimer.current);
     };
-  }, [helpOpen, recover, resetInput, toggleWeapon]);
+  }, [helpOpen, pulverize, recover, resetInput, toggleWeapon]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy('Unlocking arena'); setAuthError('');
@@ -334,21 +351,25 @@ export function App() {
           {rendererError ? <div className="arena-loading arena-failed"><Icon name="help" size={30} /><strong>Let’s get your arena running.</strong><p>{rendererError}</p><button className="button button-secondary" onClick={() => window.location.reload()}>RELOAD ARENA</button></div> : null}
 
           {!inRoom ? <>
-            <div className="preview-corner"><span className="live-pill"><i /> LIVE 3D PREVIEW</span><span className="arena-coordinate">BATTLEBOX / 001</span></div>
+            <div className="preview-corner"><span className="live-pill"><i /> LIVE 3D PREVIEW</span><button className="arena-view-toggle" onClick={() => setOverview((enabled) => !enabled)} aria-pressed={overview}>{overview ? 'BACK TO ROBOT' : 'INSPECT BATTLEBOX'}<Icon name="arrow" size={12} /></button></div>
             <div className="preview-reticle preview-reticle--tl" /><div className="preview-reticle preview-reticle--br" />
-            <div className="preview-info"><div><span className="preview-number">{selectedBot.number}</span><div><span className="eyebrow">{selectedBot.category}</span><h2>{selectedBot.name}</h2><p>{selectedBot.tagline}</p><span className="bot-version">{botVersion}</span></div></div><span className="preview-weight">250<span>LB<br />CLASS</span></span></div>
-            <div className="preview-bottom"><span>DRAG TO INSPECT <span className="preview-zoom-hint">· SCROLL TO ZOOM</span></span><span>3D PROTOTYPE <i /> ARENA V0.2</span></div>
+            <div className="preview-info"><div><span className="preview-number">{overview ? '48' : selectedBot.number}</span><div><span className="eyebrow">{overview ? '48 × 48 FT' : selectedBot.category}</span><h2>{overview ? 'THE BATTLEBOX' : selectedBot.name}</h2><p>{overview ? 'Steel floor · Upper Deck · active hazards' : selectedBot.tagline}</p><span className="bot-version">{overview ? 'WCVII-ERA ARENA' : botVersion}</span></div></div>{!overview ? <span className="preview-weight">250<span>LB<br />CLASS</span></span> : null}</div>
+            <div className="preview-bottom"><span>DRAG TO INSPECT <span className="preview-zoom-hint">· SCROLL TO ZOOM</span></span><span>3D PROTOTYPE <i /> ARENA V0.3</span></div>
           </> : <>
-            <div className="match-header"><HealthBar player={local} local /><div className="match-clock"><span>{phase?.kind === 'finished' ? 'MATCH ENDED' : phase?.kind === 'fighting' ? 'ROUND 01' : 'BATTLEBOTS ARENA'}</span><strong>{phase?.kind === 'finished' ? 'FINAL' : phase?.kind === 'fighting' ? formatTime(phase.seconds) : '02:00'}</strong><span className={`connection-label ${status === 'connected' || phase?.kind === 'finished' ? '' : 'connection-label--lost'}`}><i />{phase?.kind === 'finished' ? 'COMPLETE' : status === 'connected' ? 'LIVE' : status.toUpperCase()}</span></div><HealthBar player={opponent} /></div>
+            <div className="match-header"><HealthBar player={local} local /><div className="match-clock"><span>{phase?.kind === 'finished' ? 'MATCH ENDED' : phase?.kind === 'fighting' ? 'ROUND 01' : 'BATTLEBOTS ARENA'}</span><strong>{phase?.kind === 'finished' ? 'FINAL' : phase?.kind === 'fighting' ? formatTime(phase.seconds) : formatTime(MATCH_SECONDS)}</strong><span className={`connection-label ${status === 'connected' || phase?.kind === 'finished' ? '' : 'connection-label--lost'}`}><i />{phase?.kind === 'finished' ? 'COMPLETE' : status === 'connected' ? 'LIVE' : status.toUpperCase()}</span></div><HealthBar player={opponent} /></div>
+            {fighting ? <div className={`arena-hazards ${sawCutting ? 'arena-hazards--cutting' : sawWarning ? 'arena-hazards--warning' : ''}`} aria-label="Arena hazard status"><span className="hazard-saws"><i />KILLSAWS {sawUnlockIn > 0 ? <>IN <strong>{formatTime(sawUnlockIn)}</strong></> : <strong>{sawCutting ? 'CUTTING' : sawWarning ? 'WARNING' : 'ARMED'}</strong>}</span><span className="hazard-screws">SCREWS <strong>{snapshot?.arena.hazards.some((hazard) => hazard.kind === 'screw' && hazard.active) ? 'LIVE' : 'STANDBY'}</strong></span></div> : null}
             <div className="match-utility"><button className="icon-button" onClick={() => setMuted(!muted)} aria-label={muted ? 'Turn sound on' : 'Mute sound'}><Icon name={muted ? 'muted' : 'sound'} /></button><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="How to play"><Icon name="help" /></button><button className="icon-button" onClick={() => void leaveMatch()} aria-label="Leave match"><Icon name="exit" /></button></div>
             {phase?.kind === 'lobby' ? <div className="match-overlay"><div className="lobby-panel"><span className="eyebrow"><span className="status-dot" /> YOUR BATTLEBOX IS READY</span><h2>{opponent ? 'Face to face.' : 'Who’s your challenger?'}</h2><p>{opponent ? 'Both drivers must be ready before the battle begins.' : 'Send your invitation to a friend. They can join from any browser.'}</p><div className="invite-box"><span>PRIVATE ROOM <strong>{roomId}</strong></span><button className="icon-button" onClick={() => void copyInvite()} aria-label="Copy invitation link"><Icon name={copied ? 'check' : 'copy'} /></button></div><input className="invite-link" value={inviteUrl} readOnly aria-label="Invitation link" onFocus={(event) => event.currentTarget.select()} /><div className="lobby-seats"><span><i className={local?.ready ? 'is-ready' : ''} />{local?.name ?? 'You'} {local?.ready ? '· READY' : ''}</span><span><i className={opponent?.ready ? 'is-ready' : ''} />{opponent?.name ?? 'Waiting for opponent'} {opponent?.ready ? '· READY' : ''}</span></div><button className="button button-primary" disabled={local?.ready || status !== 'connected'} onClick={() => connection.current?.ready()}>{local?.ready ? <><Icon name="check" /> READY TO RUMBLE</> : <>I’M READY <Icon name="arrow" /></>}</button><button className="text-button" onClick={() => void copyInvite()}>{copied ? 'INVITATION COPIED' : 'COPY INVITATION LINK'}</button></div></div> : null}
             {phase?.kind === 'countdown' ? <div className="countdown-overlay"><span>IT’S ROBOT FIGHTING TIME</span><strong key={Math.ceil(phase.seconds)}>{Math.max(1, Math.ceil(phase.seconds))}</strong><span>GET READY</span></div> : null}
             {result ? <div className="match-overlay"><div className="result-panel"><span className="eyebrow">{result.winnerId === myId ? 'THE WINNER’S CIRCLE' : result.winnerId === null ? 'DRAW' : 'EVERY GREAT BOT GETS REBUILT'}</span><h2>{resultTitle}</h2><span className="result-method">{result.reason === 'knockout' ? 'KNOCKOUT' : result.reason === 'timeout' ? 'TIME DECISION' : result.reason === 'forfeit' ? 'FORFEIT' : result.reason.toUpperCase()}</span><div className="result-stats"><div><strong>{Math.round(local?.damageDealt ?? 0)}</strong><span>DAMAGE DEALT</span></div><div><strong>{local?.hits ?? 0}</strong><span>HITS LANDED</span></div><div><strong>{Math.ceil(local?.health ?? 0)}%</strong><span>HULL REMAINING</span></div></div><button className="button button-primary" disabled={rematchPending || status !== 'connected'} onClick={() => { connection.current?.rematch(); setRematchPending(true); }}>{rematchPending ? 'WAITING FOR OPPONENT' : 'RUN IT BACK'}<Icon name="recover" /></button><button className="text-button" onClick={() => void leaveMatch()}>BACK TO THE GARAGE <Icon name="arrow" size={16} /></button></div></div> : null}
             {status === 'reconnecting' || status === 'disconnected' ? <div className="connection-notice" role="status"><span className="loader" /><div><strong>{status === 'reconnecting' ? 'Reconnecting to your arena' : 'Connection interrupted'}</strong><span>Your bot stops safely while disconnected.</span></div>{status === 'disconnected' ? <button className="button button-secondary" onClick={() => { acceptSnapshots.current = true; void connection.current?.reconnect(); }}>RETRY</button> : null}</div> : null}
             {phase?.kind !== 'finished' ? <div className={`touch-controls ${!fighting ? 'touch-controls--inactive' : ''}`}>
-              <div className="drive-control"><Joystick disabled={!fighting} onChange={(throttle, steer) => { input.current.throttle = throttle; input.current.steer = steer; }} /><span>DRIVE <kbd>W A S D</kbd></span></div>
+              <div className="drive-control"><Joystick disabled={!fighting} onChange={(throttle, steer) => { input.current.throttle = throttle; input.current.steer = steer; renderer.current?.setInput({ ...input.current }); }} /><span>DRIVE <kbd>W A S D</kbd></span></div>
               <div className="weapon-controls">
-                {localBot.physics.selfRight ? <button className="recover-control" disabled={!fighting || !local || local.recovering || local.recoveryCooldown > 0} onClick={recover} aria-label={local?.recovering ? 'Witch Doctor is self-righting' : local && local.recoveryCooldown > 0 ? `Self-righting available in ${Math.ceil(local.recoveryCooldown)} seconds` : 'Activate Witch Doctor self-righting'}><Icon name="recover" size={23} /><span>{local?.recovering ? 'RIGHTING…' : local && local.recoveryCooldown > 0 ? `${Math.ceil(local.recoveryCooldown)}s` : 'SELF RIGHT'} <kbd>R</kbd></span>{local?.recovering ? <small>{Math.round(local.recoveryProgress * 100)}%</small> : null}</button> : <div className="recover-control recover-control--passive" role="note" aria-label="Tombstone can drive upside down. It has no active self-righting control."><Icon name="rotate" size={23} /><span>INVERTIBLE</span><small>{local?.inverted ? 'UPSIDE DOWN' : 'PASSIVE'}</small></div>}
+                <div className="aux-controls">
+                  {localBot.physics.selfRight ? <button className="recover-control" disabled={!fighting || !local || local.recovering || local.recoveryCooldown > 0} onClick={recover} aria-label={local?.recovering ? 'Witch Doctor is self-righting' : local && local.recoveryCooldown > 0 ? `Self-righting available in ${Math.ceil(local.recoveryCooldown)} seconds` : 'Activate Witch Doctor self-righting'}><Icon name="recover" size={23} /><span>{local?.recovering ? 'RIGHTING…' : local && local.recoveryCooldown > 0 ? `${Math.ceil(local.recoveryCooldown)}s` : 'SELF RIGHT'} <kbd>R</kbd></span>{local?.recovering ? <small>{Math.round(local.recoveryProgress * 100)}%</small> : null}</button> : <div className="recover-control recover-control--passive" role="note" aria-label="Tombstone can drive upside down. It has no active self-righting control."><Icon name="rotate" size={23} /><span>INVERTIBLE</span><small>{local?.inverted ? 'UPSIDE DOWN' : 'PASSIVE'}</small></div>}
+                  <button className={`pulverizer-control ${hammerMoving ? 'pulverizer-control--moving' : ''}`} disabled={!fighting || status !== 'connected' || hammers.length !== 2 || hammerMoving || hammerCooldown > 0} onClick={pulverize} aria-label={hammerMoving ? 'Your two assigned pulverizers are swinging' : hammerCooldown > 0 ? `Pulverizers ready in ${Math.ceil(hammerCooldown)} seconds` : 'Trigger both assigned corner pulverizers'}><Icon name="hammer" size={21} /><span>PULVERIZERS</span><small>{hammerMoving ? 'SWINGING' : hammerCooldown > 0 ? `${Math.ceil(hammerCooldown)}s` : 'READY'} <kbd>H</kbd></small></button>
+                </div>
                 <button className={`weapon-control ${weaponOn ? 'weapon-control--active' : ''}`} disabled={!fighting} onClick={toggleWeapon} aria-pressed={weaponOn}><Icon name="weapon" size={29} /><span>{weaponOn ? 'WEAPON ON' : 'SPIN UP'}</span><small>{Math.round(local?.weaponRpm ?? 0).toLocaleString('en-GB')} RPM</small><kbd>SPACE</kbd></button>
               </div>
             </div> : null}
@@ -373,7 +394,7 @@ export function App() {
       <section className="garage-bottom" hidden={inRoom}><div className="bottom-note"><span className="outline-number">01</span><div><strong>CHOOSE. CHALLENGE. DESTROY.</strong><p>One arena. Two bots. No downloads between you and the action.</p></div></div><div className="control-preview"><span>DESKTOP</span><kbd>WASD</kbd><span>DRIVE</span><kbd>SPACE</kbd><span>WEAPON</span><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="View controls"><Icon name="help" size={17} /></button></div></section>
     </main>
 
-    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.2</span></span></footer>
+    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.3</span></span></footer>
 
     {error ? <div className="toast" role="alert"><Icon name="help" size={18} /><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="Dismiss message"><Icon name="close" size={16} /></button></div> : null}
 
@@ -383,6 +404,6 @@ export function App() {
 
     {joinOpen && authentication === 'authenticated' ? <Modal title="Meet in the BattleBox." onClose={() => setJoinOpen(false)}><form onSubmit={(event) => void joinMatch(event)}><p>Paste your friend’s invitation link or enter their private room code. Your selected bot comes with you.</p><label className="field-label" htmlFor="room-code">INVITATION LINK OR ROOM CODE</label><input id="room-code" className="text-input" value={joinCode} onChange={(event) => setJoinCode(event.target.value)} placeholder="Paste invitation or enter code" required autoComplete="off" /><div className="join-selection"><span style={{ color: paintColor(botId, paint) }}><BotSilhouette horizontal={botId === 'tombstone'} /></span><div><small>YOUR MACHINE</small><strong>{selectedBot.name}</strong><span>{driverName.trim() || 'Driver'}</span></div></div><button className="button button-primary" disabled={isBusy}>{isBusy ? 'JOINING…' : 'JOIN THE ARENA'}<Icon name="arrow" /></button></form></Modal> : null}
 
-    {helpOpen ? <Modal title="Make some mayhem." onClose={() => setHelpOpen(false)}><p>Choose a bot, invite a friend, and hit Ready. You have two minutes to finish the job.</p><div className="howto-list"><div><span>01</span><div><strong>Drive with intent.</strong><p>Use the left joystick or WASD. Push up to accelerate, down to reverse, and left or right to steer your bot. In the garage, drag the 3D preview to inspect your machine.</p></div></div><div><span>02</span><div><strong>Give your weapon time.</strong><p>Tap Spin Up or press Space to toggle your weapon. In this build, Witch Doctor spins up in {BOTS.witchdoctor.weapon.spinUpSeconds.toFixed(1)}s and Tombstone in {BOTS.tombstone.weapon.spinUpSeconds.toFixed(1)}s. Hits drain RPM, so allow your weapon to regain speed.</p></div></div><div><span>03</span><div><strong>Know your recovery.</strong><p>Witch Doctor has active self-righting. Tap Self Right or press R, then wait for its cooldown. Tombstone has no self-righter; it can keep driving upside down. Win by knockout or have more hull health when time runs out.</p></div></div></div><button className="button button-primary" onClick={() => setHelpOpen(false)}>GOT IT. LET’S FIGHT. <Icon name="arrow" /></button></Modal> : null}
+    {helpOpen ? <Modal title="Make some mayhem." onClose={() => setHelpOpen(false)}><p>Choose a bot, invite a friend, and hit Ready. You have three minutes to finish the job.</p><div className="howto-list"><div><span>01</span><div><strong>Drive with intent.</strong><p>Use the left joystick or WASD. Push up to accelerate, down to reverse, and left or right to steer your bot. In the garage, drag the 3D preview to inspect your machine.</p></div></div><div><span>02</span><div><strong>Give your weapon time.</strong><p>Tap Spin Up or press Space to toggle your weapon. In this build, Witch Doctor spins up in {BOTS.witchdoctor.weapon.spinUpSeconds.toFixed(1)}s and Tombstone in {BOTS.tombstone.weapon.spinUpSeconds.toFixed(1)}s. Hits drain RPM, so allow your weapon to regain speed.</p></div></div><div><span>03</span><div><strong>Know your recovery.</strong><p>Witch Doctor has active self-righting. Tap Self Right or press R, then wait for its cooldown. Tombstone has no self-righter; it can keep driving upside down. Win by knockout or have more hull health when time runs out.</p></div></div><div><span>04</span><div><strong>Make the BattleBox work for you.</strong><p>Tap Pulverizers or press H to swing your two assigned corner hammers, then wait for their cooldown. Keep clear of the live screws and use the raised Upper Deck to change the fight. Killsaws activate only in the final minute; watch for their warning before the blades rise.</p></div></div></div><button className="button button-primary" onClick={() => setHelpOpen(false)}>GOT IT. LET’S FIGHT. <Icon name="arrow" /></button></Modal> : null}
   </div>;
 }

@@ -19,11 +19,15 @@ Create a match, share its invitation link, and select **Ready** on both devices.
 
 On a phone, rotate to landscape during a match. Use the left stick to drive and steer. Tap the weapon button to toggle the spinner. Tap recovery to right the bot.
 
-On a keyboard, use WASD or the arrow keys to drive, Space to toggle the weapon, and R to recover. Sound is off initially. Use the speaker button to enable it.
+On a keyboard, use WASD or the arrow keys to drive, Space to toggle the weapon, R to recover, and H to operate your two corner pulverizers. The same controls have touch buttons. Sound is off initially. Use the speaker button to enable it.
 
 In the garage, drag the 3D view to inspect a bot from different angles. Use the mouse wheel to zoom. Witch Doctor has an active ribcage self-righter. Tombstone drives inverted and has no active self-righting control. Weapons spin up gradually, coast after power is cut, and lose speed after impacts.
 
-Matches last two minutes. A knockout ends a match immediately. Otherwise, the bot with more health wins. Equal health produces a draw.
+Matches last three minutes. A knockout ends a match immediately. Otherwise, the bot with more health wins. Equal health produces a draw.
+
+The BattleBox reconstructs the WCVII-era enclosure, worn steel floor, clear protective panels, corner pulverizers and Upper Deck. The screws operate throughout combat and reverse when a robot jams them. Each team operates two corner hammers. Killsaws stay retracted for the first two minutes, then warn before rising beneath nearby robots in the final minute. Arena damage and lifting impulses run on the server. Hazard hits do not count toward a robot's weapon damage statistics.
+
+Select **Inspect BattleBox** in the garage for a full-arena view. Drag to orbit and scroll to zoom. [Arena sources](docs/arena-references.md) distinguish verified dimensions and operation from approximate hazard positions and force values.
 
 ## Verify changes
 
@@ -31,6 +35,7 @@ Matches last two minutes. A knockout ends a match immediately. Otherwise, the bo
 pnpm typecheck
 pnpm test
 pnpm verify:models
+pnpm verify:arena
 pnpm build
 ```
 
@@ -39,9 +44,12 @@ With the server running, exercise real clients:
 ```sh
 pnpm verify:multiplayer
 pnpm verify:load
+pnpm verify:arena-network
 ```
 
 Set `VERIFY_BASE_URL` to test another server. Set `DEMO_PASSWORD` to its shared game password. The multiplayer check covers login, access rejection, two-player combat, reconnect, rematch, and forfeit. The load check runs four matches with eight clients and verifies the room limit.
+
+The arena network check runs the real two-minute killsaw lockout with two clients. It verifies identical hazard states, hammer ownership, and a physical saw hit after unlocking. Allow about two and a half minutes.
 
 ## Deploy on Render
 

@@ -22,6 +22,7 @@ interface DisplayBot {
   model: BotModel;
   state: PlayerSnapshot | null;
   weaponBlur: Mesh;
+  displayedHealth: number;
 }
 
 interface Spark {
@@ -49,7 +50,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   scene.fogColor = new Color3(0.047, 0.061, 0.071);
   const camera = new FreeCamera('arena-camera', new Vector3(7.4, 5.8, 8.5), scene);
   camera.minZ = 0.12;
-  camera.maxZ = 110;
+  camera.maxZ = 200;
   camera.fov = 0.76;
   camera.setTarget(new Vector3(0, 0.4, 0));
   scene.activeCamera = camera;
@@ -95,6 +96,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   let orbitYaw = 0.72;
   let orbitElevation = 0.48;
   let orbitDistance = 6.8;
+  let overview = false;
   let orbitPointer: { id: number; x: number; y: number } | null = null;
   const cameraTarget = new Vector3(0, 0.5, 0);
   const desiredCamera = new Vector3();
@@ -142,7 +144,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     weaponBlur.material = blurMaterial;
     weaponBlur.isPickable = false;
     weaponBlur.visibility = 0;
-    const display = { model, state: null, weaponBlur };
+    const display = { model, state: null, weaponBlur, displayedHealth: 100 };
     bots.set(id, display);
     return display;
   }
@@ -210,7 +212,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   const orbitZoom = (event: WheelEvent) => {
     if (snapshot) return;
     event.preventDefault();
-    orbitDistance = Math.max(5.6, Math.min(14, orbitDistance + event.deltaY * 0.008));
+    orbitDistance = Math.max(overview ? 38 : 5.6, Math.min(overview ? 100 : 14, orbitDistance + event.deltaY * (overview ? 0.05 : 0.008)));
   };
   canvas.addEventListener('pointerdown', orbitDown);
   canvas.addEventListener('pointermove', orbitMove);
@@ -224,7 +226,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
 
   engine.runRenderLoop(() => {
     if (disposed) return;
-    const dt = Math.min(engine.getDeltaTime() / 1000, 0.05);
+    const frameSeconds = engine.getDeltaTime() / 1000;
+    const dt = Math.min(frameSeconds, 0.05);
     time += dt;
     const blend = 1 - Math.exp(-dt * 14);
     const elapsed = Math.min((performance.now() - lastUpdateAt) / 1000, 0.12);
@@ -271,7 +274,10 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         else bot.model.weapon.rotation.y = weaponAngle;
         bot.weaponBlur.visibility = Math.max(0, Math.min(1, (player.weaponRpm / definition.weapon.maxRpm - 0.15) * 1.15));
         if (bot.model.selfRighter) bot.model.selfRighter.rotation.x = -Math.sin(player.recoveryProgress * Math.PI) * 2.6;
-        bot.model.setDamage?.(1 - player.health / 100);
+        if (bot.displayedHealth !== player.health) {
+          bot.model.setDamage(1 - player.health / 100);
+          bot.displayedHealth = player.health;
+        }
         bot.model.root.setEnabled(true);
         bot.model.glow.alpha = player.connected ? 1 : 0.25;
         if (isLocal) sound.motor(player.weaponRpm / definition.weapon.maxRpm, Math.hypot(player.velocity.x, player.velocity.z) / definition.speed, player.botId === 'tombstone');
@@ -334,7 +340,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     }
 
     scene.render();
-    fpsTime += dt;
+    fpsTime += frameSeconds;
     fpsFrames += 1;
     if (fpsTime > 1) {
       canvas.dataset.fps = String(Math.round(fpsFrames / fpsTime));
@@ -349,6 +355,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       if (lastRoomId !== next.roomId || next.tick < (snapshot?.tick ?? 0)) lastEventId = -1;
       lastRoomId = next.roomId;
       snapshot = next;
+      scene.fogDensity = 0.012;
+      stage.setState(next.arena);
       localId = playerId;
       lastUpdateAt = performance.now();
       const ids = new Set(next.players.map((item) => item.id));
@@ -366,19 +374,28 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       for (const event of next.events) {
         if (event.id <= lastEventId) continue;
         lastEventId = event.id;
-        if (event.kind === 'hit') burst(event.position, event.strength);
+        if (event.kind === 'hit' || event.kind === 'hazard') burst(event.position, event.strength);
       }
     },
     setInput(next) { input = next; },
     setPreview(botId, paint) {
       if (disposed) return;
       snapshot = null;
+      stage.setState(null);
+      scene.fogDensity = overview ? 0.003 : 0.012;
       localId = null;
       input = { ...NEUTRAL_INPUT };
       previewBot = botId;
       previewPaint = paint;
       lastEventId = -1;
       preview();
+    },
+    setOverview(enabled) {
+      overview = enabled;
+      orbitDistance = enabled ? 82 : 6.8;
+      orbitElevation = enabled ? 0.86 : 0.48;
+      orbitYaw = enabled ? 0.28 : 0.72;
+      scene.fogDensity = enabled ? 0.003 : 0.012;
     },
     setMuted(muted) { sound.setMuted(muted); },
     dispose() {

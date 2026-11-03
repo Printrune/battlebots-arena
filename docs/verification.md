@@ -16,6 +16,7 @@ The local production build was verified on 3 November 2026.
 | Dropped connection | Automatic reconnect restored the same seat |
 | Rematch | Restored health and readiness |
 | Consented departure during combat | Correct forfeit outcome |
+| Simulated 150 ms round-trip latency | Login, join, reconnect, knockout, rematch, and forfeit passed |
 | Four rooms and eight clients | 30.0015 simulation updates per second per room over 20 seconds |
 | Capacity overflow | Fifth room rejected with 503 |
 

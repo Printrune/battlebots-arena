@@ -59,3 +59,5 @@ The two bots are procedural prototype models. Paint changes appearance only. Mat
 The game has no age gate or date-of-birth collection. Accounts, payments, public matchmaking, spectators, team battles, and real-show activities are future work.
 
 The client uses React and Babylon.js. Colyseus owns rooms, authentication checks, and transport. A separate Rapier simulation owns combat. Shared Zod schemas validate network input and snapshots.
+
+See [release verification](docs/verification.md) for measured results and remaining device checks.

@@ -13,6 +13,7 @@ import type { DamagePartId } from '../shared/damage';
 import { ComponentDamage, DebrisSystem } from './damage';
 import type { DetachedFragment } from './damage';
 import { PHYSICS } from '../shared/physics';
+import { steeringForDrive } from '../shared/driving';
 import { hardLandingDamage, IMPACT_TUNING, rotorEnergy, solveWeaponImpact } from './impact-physics';
 import type { ImpactBody, ImpactSolution } from './impact-physics';
 
@@ -433,7 +434,7 @@ export class RobotPhysics {
     const gyroSteering = this.definition.weapon.kind === 'vertical-disc'
       ? 1 / (1 + this.definition.weapon.gyroStrength * this.weaponCharge * this.weaponCharge * 0.65)
       : 1;
-    const targetYawRate = steering * this.definition.turnSpeed * invertedFactor * gyroSteering * handling.turnScale + throttle * handling.yawPull;
+    const targetYawRate = steeringForDrive(throttle, steering) * this.definition.turnSpeed * invertedFactor * gyroSteering * handling.turnScale + throttle * handling.yawPull;
     const targetSpeed = throttle * this.definition.speed * invertedFactor * handling.speedScale;
     const velocity = this.body.linvel();
     const currentForward = dot(velocity, forward);
@@ -505,6 +506,47 @@ export class RobotPhysics {
     const localNormal = normalize(rotate(inverse, normal), { x: 0, y: 1, z: 0 });
     const explicit = colliderHandle === undefined ? undefined : this.componentColliders.get(colliderHandle);
     const partId = explicit ?? this.partAt(localPoint);
+    return this.damageComponent(partId, amount, localPoint, localNormal, normal);
+  }
+
+  /** The match result owns this one-time wreck conversion, not an area attack. */
+  explode(): DetachedFragment[] {
+    const fragments: DetachedFragment[] = [];
+    const rotation = this.body.rotation();
+    for (const part of damageParts(this.definition.id)) {
+      if (partIntegrity(this.damage.state, part.id) <= 0) continue;
+      const origin = this.partOrigin(part.id);
+      const localNormal = normalize(subtract(origin, this.definition.physics.chassisOffset), { x: 0, y: 1, z: 0 });
+      const normal = rotate(rotation, localNormal);
+      const fragment = this.damageComponent(part.id, 1000, origin, localNormal, normal);
+      if (!fragment) continue;
+      // Fragments retain chassis motion, with a bounded outward blast velocity.
+      fragment.velocity = add(fragment.velocity, add(scale(normal, 4), { x: 0, y: 4, z: 0 }));
+      fragment.angularVelocity = add(fragment.angularVelocity, rotate(rotation, { x: 3, y: 5, z: -4 }));
+      fragments.push(fragment);
+    }
+    this.weaponCharge = 0;
+    this.recoveryRemaining = 0;
+    this.recoveryProgress = 0;
+    return fragments;
+  }
+
+  private partOrigin(partId: DamagePartId): Vector {
+    const wheel = this.wheels.find((item) => item.id === partId);
+    if (wheel) return { ...wheel.position };
+    if (partId === 'weapon') return { ...this.definition.weapon.mount };
+    const physical = this.definition.physics;
+    return partId === 'armor-rear'
+      ? { x: 0, y: physical.chassisOffset.y, z: physical.chassisOffset.z - physical.halfExtents.z }
+      : partId === 'armor-top'
+        ? { x: 0, y: physical.chassisOffset.y + physical.halfExtents.y, z: physical.chassisOffset.z }
+        : this.definition.id === 'witchdoctor'
+          ? { x: partId === 'armor-left' ? -1.33 : 1.33, y: -0.29, z: 1.30 }
+          : { x: (partId === 'armor-left' ? -1 : 1) * physical.halfExtents.x, y: physical.chassisOffset.y, z: physical.chassisOffset.z };
+  }
+
+  private damageComponent(partId: DamagePartId, amount: number, localPoint: Vector, localNormal: Vector, normal: Vector): DetachedFragment | null {
+    const rotation = this.body.rotation();
     const broke = this.damage.impact(partId, amount, localPoint, localNormal);
     const definition = damageParts(this.definition.id).find((part) => part.id === partId);
     if (!broke || !definition?.detachable) return null;
@@ -513,21 +555,14 @@ export class RobotPhysics {
     let localOrigin: Vector;
     if (wheel) {
       this.disableCollider(wheel.collider);
-      localOrigin = { ...wheel.position };
+      localOrigin = this.partOrigin(partId);
       fragment = { kind: 'wheel', partId, localOrigin, position: ZERO, rotation,
         velocity: ZERO, angularVelocity: ZERO, mass: Math.min(7.5, this.definition.physics.mass * 0.15 / this.wheels.length),
         radius: this.definition.physics.wheelRadius, width: this.definition.physics.wheelWidth };
     } else {
       for (const collider of this.armorColliders.get(partId) ?? []) this.disableCollider(collider);
       const physical = this.definition.physics;
-      const left = partId === 'armor-left';
-      localOrigin = partId === 'armor-rear'
-        ? { x: 0, y: physical.chassisOffset.y, z: physical.chassisOffset.z - physical.halfExtents.z }
-        : partId === 'armor-top'
-          ? { x: 0, y: physical.chassisOffset.y + physical.halfExtents.y, z: physical.chassisOffset.z }
-          : this.definition.id === 'witchdoctor'
-            ? { x: left ? -1.33 : 1.33, y: -0.29, z: 1.30 }
-            : { x: (left ? -1 : 1) * physical.halfExtents.x, y: physical.chassisOffset.y, z: physical.chassisOffset.z };
+      localOrigin = this.partOrigin(partId);
       const halfExtents = partId === 'armor-top' ? { x: physical.halfExtents.x * 0.85, y: 0.045, z: physical.halfExtents.z * 0.85 }
         : partId === 'armor-rear' ? { x: physical.halfExtents.x * 0.8, y: 0.19, z: 0.045 }
           : { x: 0.055, y: 0.20, z: this.definition.id === 'witchdoctor' ? 0.46 : 0.55 };
@@ -942,6 +977,16 @@ export class Simulation {
     if (this.phase.kind === 'finished') return;
     this.phase = { kind: 'finished', result };
     this.hazards.freeze();
+    for (const player of this.players.values()) {
+      const destroyed = player.health <= 0 || player.physics.damage.state.immobilizedFor >= IMMOBILIZATION_SECONDS - 0.00001;
+      const lostCombat = result.winnerId !== null && player.id !== result.winnerId &&
+        (result.reason === 'knockout' || result.reason === 'timeout');
+      if (!lostCombat && !(result.reason === 'draw' && destroyed)) continue;
+      player.health = 0;
+      const position = { ...player.physics.body.translation() };
+      for (const fragment of player.physics.explode()) this.debris.spawn(player.id, player.selection.botId, fragment);
+      this.addEvent({ kind: 'explosion', sourceId: player.id, targetId: player.id, position, strength: 1 });
+    }
     for (const player of this.players.values()) {
       player.input = { ...NEUTRAL_INPUT, seq: player.lastInputSeq };
       player.physics.wheelSpeedLeft = 0;

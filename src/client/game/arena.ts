@@ -22,6 +22,9 @@ import { DebrisRenderer } from './debris';
 import { PHYSICS } from '../../shared/physics';
 import { followHeading, predictMotionToRef } from './motion';
 import { createLifeBars } from './life-bars';
+import { createExplosions } from './explosions';
+import { DEFEAT_REVEAL_SECONDS } from '../../shared/presentation';
+import { steeringForDrive } from '../../shared/driving';
 
 interface DisplayBot {
   model: BotModel;
@@ -88,6 +91,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   const bots = new Map<string, DisplayBot>();
   const lifeBars = createLifeBars(scene, camera);
   const debris = new DebrisRenderer(scene, (id) => bots.get(id)?.model);
+  const explosions = createExplosions(scene);
   const previewId = 'preview-selected';
   const rivalId = 'preview-rival';
   let snapshot: MatchState | null = null;
@@ -99,6 +103,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   let lastEventId = -1;
   let lastRoomId = '';
   let shake = 0;
+  let finishFocus: { position: Vector3; remaining: number } | null = null;
   let previewBot: BotId = 'witchdoctor';
   let previewPaint: PaintId = 'signature';
   let fpsTime = 0;
@@ -256,10 +261,10 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   fitResolution();
   preview();
   // Compile the hidden impact overlay while loading, before the first real hit.
-  await Promise.all([...bots.values()].map(async ({ model }) => {
+  await Promise.all([explosions.ready(), ...[...bots.values()].map(async ({ model }) => {
     const scar = model.meshes.find((mesh) => mesh.name.includes('damage-scar-'));
     if (scar?.material) await scar.material.forceCompilationAsync(scar);
-  }));
+  })]);
 
   engine.runRenderLoop(() => {
     if (disposed) return;
@@ -285,7 +290,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
           if (isLocal && player.grounded && Math.abs(up) > 0.7 && !player.recovering) {
             const grip = player.inverted && player.botId === 'witchdoctor' ? 0.35 : 1;
             const driveTuning = damagedDriveTuning(player.botId, player.damage);
-            const desiredYawRate = (input.steer * definition.turnSpeed * driveTuning.turnScale + input.throttle * driveTuning.yawPull) * grip;
+            const desiredYawRate = (steeringForDrive(input.throttle, input.steer) * definition.turnSpeed * driveTuning.turnScale + input.throttle * driveTuning.yawPull) * grip;
             const yawChange = Math.max(-definition.physics.angularAcceleration * elapsed,
               Math.min(definition.physics.angularAcceleration * elapsed, desiredYawRate - player.angularVelocity.y));
             predictedYaw = yawChange * 0.5 * elapsed;
@@ -326,7 +331,21 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       }
 
       const followed = localId ? bots.get(localId) : bots.values().next().value;
-      if (followed) {
+      if (finishFocus && finishFocus.remaining > 0) {
+        const position = finishFocus.position;
+        const yaw = followed?.cameraYaw ?? 0;
+        desiredCamera.set(
+          Math.max(-ARENA.halfWidth + 0.4, Math.min(ARENA.halfWidth - 0.4, position.x - Math.sin(yaw) * 10)),
+          Math.max(7, position.y + 6.5),
+          Math.max(-ARENA.halfDepth + 0.4, Math.min(ARENA.halfDepth - 0.4, position.z - Math.cos(yaw) * 10)),
+        );
+        Vector3.LerpToRef(camera.position, desiredCamera, 1 - Math.exp(-dt * 12), camera.position);
+        targetPosition.set(position.x, position.y + 0.7, position.z);
+        Vector3.LerpToRef(cameraTarget, targetPosition, 1 - Math.exp(-dt * 20), cameraTarget);
+        camera.setTarget(cameraTarget);
+        finishFocus.remaining -= dt;
+        canvas.dataset.opponentDirection = 'visible';
+      } else if (followed) {
         const position = followed.model.root.position;
         const player = followed.state;
         followed.cameraYaw = player ? followHeading(followed.cameraYaw ?? player.yaw, player.yaw, player.grounded, dt) : 0;
@@ -383,6 +402,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     }
 
     debris.pulse(dt, elapsed);
+    explosions.pulse(dt);
     lifeBars.pulse(dt);
     scene.render();
     fpsTime += frameSeconds;
@@ -397,7 +417,9 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   return {
     update(next, playerId) {
       if (disposed) return;
-      if (lastRoomId !== next.roomId || next.tick < (snapshot?.tick ?? 0)) { lastEventId = -1; debris.clear(); }
+      const combatFinished = snapshot?.roomId === next.roomId && snapshot.phase.kind !== 'finished' && next.phase.kind === 'finished';
+      if (lastRoomId !== next.roomId || next.tick < (snapshot?.tick ?? 0)) { lastEventId = -1; debris.clear(); explosions.clear(); finishFocus = null; }
+      if (next.phase.kind === 'lobby' || next.phase.kind === 'countdown') { explosions.clear(); finishFocus = null; }
       lastRoomId = next.roomId;
       snapshot = next;
       scene.fogDensity = 0.012;
@@ -433,6 +455,13 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
           if (event.sourceId === playerId) shake = Math.max(shake, Math.min(0.18, event.strength * 0.14));
           sound.hit(event.strength * 0.5);
         }
+        if (event.kind === 'explosion' && combatFinished) {
+          explosions.trigger(event.position, event.id);
+          if (finishFocus) finishFocus.position.addInPlaceFromFloats(event.position.x, event.position.y, event.position.z).scaleInPlace(0.5);
+          else finishFocus = { position: new Vector3(event.position.x, event.position.y, event.position.z), remaining: DEFEAT_REVEAL_SECONDS };
+          shake = Math.max(shake, 0.32);
+          sound.explosion();
+        }
       }
     },
     setInput(next) { input = next; },
@@ -441,6 +470,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       snapshot = null;
       lifeBars.clear();
       debris.clear();
+      explosions.clear();
+      finishFocus = null;
       stage.setState(null);
       scene.fogDensity = overview ? 0.003 : 0.012;
       localId = null;
@@ -474,6 +505,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       sound.dispose();
       debris.clear();
       lifeBars.dispose();
+      explosions.dispose();
       scene.dispose();
       engine.dispose();
     },

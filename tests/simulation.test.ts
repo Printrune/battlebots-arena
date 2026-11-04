@@ -117,6 +117,7 @@ test('an untouched timed match ends as one draw and stays finished', async () =>
     const now = startFight(simulation);
     advance(simulation, MATCH_SECONDS, now);
     assert.deepEqual(simulation.snapshot().phase, { kind: 'finished', result: { winnerId: null, reason: 'draw' } });
+    assert.equal(simulation.snapshot().events.some((event) => event.kind === 'explosion'), false);
     simulation.forfeit('a');
     advance(simulation, 1, now + MATCH_SECONDS * 1000);
     assert.deepEqual(simulation.snapshot().phase, { kind: 'finished', result: { winnerId: null, reason: 'draw' } });
@@ -134,6 +135,7 @@ test('forfeit has one winner and rematch restores the arena without stale input'
     simulation.setConnected('a', false);
     simulation.forfeit('a');
     assert.deepEqual(simulation.snapshot().phase, { kind: 'finished', result: { winnerId: 'b', reason: 'forfeit' } });
+    assert.equal(simulation.snapshot().events.some((event) => event.kind === 'explosion'), false);
     simulation.setConnected('a', true);
     simulation.rematch();
     const snapshot = simulation.snapshot();

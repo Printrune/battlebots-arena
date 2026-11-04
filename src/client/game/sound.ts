@@ -95,6 +95,36 @@ export class ArenaSound {
     }
   }
 
+  explosion(): void {
+    const context = this.context;
+    if (!context || !this.master || this.muted || context.state !== 'running') return;
+    const time = context.currentTime;
+    const buffer = context.createBuffer(1, Math.ceil(context.sampleRate * 0.95), context.sampleRate);
+    const samples = buffer.getChannelData(0);
+    for (let i = 0; i < samples.length; i += 1) samples[i] = (Math.random() * 2 - 1) * Math.exp(-i / (context.sampleRate * 0.22));
+    const noise = context.createBufferSource();
+    noise.buffer = buffer;
+    const filter = context.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1_800, time);
+    filter.frequency.exponentialRampToValueAtTime(100, time + 0.8);
+    const envelope = context.createGain();
+    envelope.gain.setValueAtTime(0.35, time);
+    noise.connect(filter); filter.connect(envelope); envelope.connect(this.master);
+    noise.start(time);
+    noise.onended = () => { noise.disconnect(); filter.disconnect(); envelope.disconnect(); };
+    const boom = context.createOscillator();
+    const bass = context.createGain();
+    boom.type = 'sine';
+    boom.frequency.setValueAtTime(95, time);
+    boom.frequency.exponentialRampToValueAtTime(28, time + 0.55);
+    bass.gain.setValueAtTime(0.22, time);
+    bass.gain.exponentialRampToValueAtTime(0.0001, time + 0.65);
+    boom.connect(bass); bass.connect(this.master);
+    boom.start(time); boom.stop(time + 0.7);
+    boom.onended = () => { boom.disconnect(); bass.disconnect(); };
+  }
+
   dispose(): void {
     if (this.context) void this.context.close().catch(() => undefined);
     this.context = null;

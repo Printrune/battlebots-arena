@@ -163,7 +163,7 @@ export const matchPhaseSchema = z.discriminatedUnion('kind', [
 ]);
 export type MatchPhase = z.infer<typeof matchPhaseSchema>;
 export const matchEventSchema = z.object({
-  id: z.number(), kind: z.enum(['hit', 'recover', 'hazard', 'break', 'landing']), sourceId: z.string(),
+  id: z.number(), kind: z.enum(['hit', 'recover', 'hazard', 'break', 'landing', 'explosion']), sourceId: z.string(),
   targetId: z.string(), position: vectorSchema, strength: z.number(),
 });
 export type MatchEvent = z.infer<typeof matchEventSchema>;

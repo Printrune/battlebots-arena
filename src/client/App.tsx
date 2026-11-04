@@ -10,6 +10,7 @@ import { createConnection } from './network';
 import type { ConnectionStatus } from './network';
 import { BotSilhouette, Icon } from './components/Icon';
 import { Joystick } from './components/Joystick';
+import { DEFEAT_REVEAL_SECONDS } from '../shared/presentation';
 
 const sessionSchema = z.object({ authenticated: z.boolean(), passwordRequired: z.boolean() });
 const errorSchema = z.object({ error: z.string() });
@@ -103,6 +104,7 @@ export function App() {
   const keys = useRef(new Set<string>());
   const recoveryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const damageNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resultTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const baselineDamageOnNextSnapshot = useRef(true);
 
   const [botId, setBotId] = useState<BotId>('witchdoctor');
@@ -128,6 +130,7 @@ export function App() {
   const [muted, setMuted] = useState(true);
   const [weaponOn, setWeaponOn] = useState(false);
   const [rematchPending, setRematchPending] = useState(false);
+  const [resultVisible, setResultVisible] = useState(false);
   const [opponentDirection, setOpponentDirection] = useState<string | null>(null);
   const [damageNotice, setDamageNotice] = useState<DamageNotice | null>(null);
 
@@ -166,6 +169,13 @@ export function App() {
       onState: (state, id) => {
         if (!acceptSnapshots.current) return;
         const previous = currentSnapshot.current;
+        if (previous?.roomId !== state.roomId || previous.phase.kind !== state.phase.kind) {
+          if (resultTimer.current) clearTimeout(resultTimer.current);
+          const showExplosion = previous?.roomId === state.roomId && state.phase.kind === 'finished' &&
+            state.events.some((event) => event.kind === 'explosion');
+          setResultVisible(state.phase.kind === 'finished' && !showExplosion);
+          if (showExplosion) resultTimer.current = setTimeout(() => setResultVisible(true), DEFEAT_REVEAL_SECONDS * 1000);
+        }
         const previousLocal = previous?.players.find((player) => player.id === id);
         const nextLocal = state.players.find((player) => player.id === id);
         if (state.phase.kind !== 'fighting') {
@@ -211,6 +221,7 @@ export function App() {
     connection.current = client;
     return () => {
       if (damageNoticeTimer.current) clearTimeout(damageNoticeTimer.current);
+      if (resultTimer.current) clearTimeout(resultTimer.current);
       connection.current = null; void client.leave();
     };
   }, []);
@@ -388,6 +399,8 @@ export function App() {
   }
 
   async function leaveMatch() {
+    if (resultTimer.current) clearTimeout(resultTimer.current);
+    setResultVisible(false);
     acceptSnapshots.current = false; activeRoom.current = false; resetInput();
     try { await connection.current?.leave(); } catch { /* A disconnected room can still be left locally. */ }
     setInRoom(false); setSnapshot(null); setRoomId(''); setMyId(null); currentSnapshot.current = null;
@@ -430,7 +443,7 @@ export function App() {
             <div className="preview-corner"><span className="live-pill"><i /> LIVE 3D PREVIEW</span><button className="arena-view-toggle" onClick={() => setOverview((enabled) => !enabled)} aria-pressed={overview}>{overview ? 'BACK TO ROBOT' : 'INSPECT BATTLEBOX'}<Icon name="arrow" size={12} /></button></div>
             <div className="preview-reticle preview-reticle--tl" /><div className="preview-reticle preview-reticle--br" />
             <div className="preview-info"><div><span className="preview-number">{overview ? '48' : selectedBot.number}</span><div><span className="eyebrow">{overview ? '48 × 48 FT' : selectedBot.category}</span><h2>{overview ? 'THE BATTLEBOX' : selectedBot.name}</h2><p>{overview ? 'Steel floor · Upper Deck · active hazards' : selectedBot.tagline}</p><span className="bot-version">{overview ? 'WCVII-ERA ARENA' : botVersion}</span></div></div>{!overview ? <span className="preview-weight">250<span>LB<br />CLASS</span></span> : null}</div>
-            <div className="preview-bottom"><span>DRAG TO INSPECT <span className="preview-zoom-hint">· SCROLL TO ZOOM</span></span><span>3D PROTOTYPE <i /> ARENA V0.5</span></div>
+            <div className="preview-bottom"><span>DRAG TO INSPECT <span className="preview-zoom-hint">· SCROLL TO ZOOM</span></span><span>3D PROTOTYPE <i /> ARENA V0.6</span></div>
           </> : <>
             <div className="match-header"><HealthBar player={local} local /><div className="match-clock"><span>{phase?.kind === 'finished' ? 'MATCH ENDED' : phase?.kind === 'fighting' ? 'ROUND 01' : 'BATTLEBOTS ARENA'}</span><strong>{phase?.kind === 'finished' ? 'FINAL' : phase?.kind === 'fighting' ? formatTime(phase.seconds) : formatTime(MATCH_SECONDS)}</strong><span className={`connection-label ${status === 'connected' || phase?.kind === 'finished' ? '' : 'connection-label--lost'}`}><i />{phase?.kind === 'finished' ? 'COMPLETE' : status === 'connected' ? 'LIVE' : status.toUpperCase()}</span></div><HealthBar player={opponent} /></div>
             {fighting ? <div className={`arena-hazards ${sawCutting ? 'arena-hazards--cutting' : sawWarning ? 'arena-hazards--warning' : ''}`} aria-label="Arena hazard status"><span className="hazard-saws"><i />KILLSAWS {sawUnlockIn > 0 ? <>IN <strong>{formatTime(sawUnlockIn)}</strong></> : <strong>{sawCutting ? 'CUTTING' : sawWarning ? 'WARNING' : 'ARMED'}</strong>}</span><span className="hazard-screws">SCREWS <strong>{snapshot?.arena.hazards.some((hazard) => hazard.kind === 'screw' && hazard.active) ? 'LIVE' : 'STANDBY'}</strong></span></div> : null}
@@ -439,7 +452,8 @@ export function App() {
             <div className="match-utility"><button className="icon-button" onClick={() => setMuted(!muted)} aria-label={muted ? 'Turn sound on' : 'Mute sound'}><Icon name={muted ? 'muted' : 'sound'} /></button><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="How to play"><Icon name="help" /></button><button className="icon-button" onClick={() => void leaveMatch()} aria-label="Leave match"><Icon name="exit" /></button></div>
             {phase?.kind === 'lobby' ? <div className="match-overlay"><div className="lobby-panel"><span className="eyebrow"><span className="status-dot" /> YOUR BATTLEBOX IS READY</span><h2>{opponent ? 'Face to face.' : 'Who’s your challenger?'}</h2><p>{opponent ? 'Both drivers must be ready before the battle begins.' : 'Send your invitation to a friend. They can join from any browser.'}</p><div className="invite-box"><span>PRIVATE ROOM <strong>{roomId}</strong></span><button className="icon-button" onClick={() => void copyInvite()} aria-label="Copy invitation link"><Icon name={copied ? 'check' : 'copy'} /></button></div><input className="invite-link" value={inviteUrl} readOnly aria-label="Invitation link" onFocus={(event) => event.currentTarget.select()} /><div className="lobby-seats"><span><i className={local?.ready ? 'is-ready' : ''} />{local?.name ?? 'You'} {local?.ready ? '· READY' : ''}</span><span><i className={opponent?.ready ? 'is-ready' : ''} />{opponent?.name ?? 'Waiting for opponent'} {opponent?.ready ? '· READY' : ''}</span></div><button className="button button-primary" disabled={local?.ready || status !== 'connected'} onClick={() => connection.current?.ready()}>{local?.ready ? <><Icon name="check" /> READY TO RUMBLE</> : <>I’M READY <Icon name="arrow" /></>}</button><button className="text-button" onClick={() => void copyInvite()}>{copied ? 'INVITATION COPIED' : 'COPY INVITATION LINK'}</button></div></div> : null}
             {phase?.kind === 'countdown' ? <div className="countdown-overlay"><span>IT’S ROBOT FIGHTING TIME</span><strong key={Math.ceil(phase.seconds)}>{Math.max(1, Math.ceil(phase.seconds))}</strong><span>GET READY</span></div> : null}
-            {result ? <div className="match-overlay"><div className="result-panel"><span className="eyebrow">{result.winnerId === myId ? 'THE WINNER’S CIRCLE' : result.winnerId === null ? 'DRAW' : 'EVERY GREAT BOT GETS REBUILT'}</span><h2>{resultTitle}</h2><span className="result-method">{result.reason === 'knockout' ? 'KNOCKOUT' : result.reason === 'timeout' ? 'TIME DECISION' : result.reason === 'forfeit' ? 'FORFEIT' : result.reason.toUpperCase()}</span><div className="result-stats"><div><strong>{Math.round(local?.damageDealt ?? 0)}</strong><span>DAMAGE DEALT</span></div><div><strong>{local?.hits ?? 0}</strong><span>HITS LANDED</span></div><div><strong>{Math.ceil(local?.health ?? 0)}%</strong><span>HULL REMAINING</span></div></div><button className="button button-primary" disabled={rematchPending || status !== 'connected'} onClick={() => { connection.current?.rematch(); setRematchPending(true); }}>{rematchPending ? 'WAITING FOR OPPONENT' : 'RUN IT BACK'}<Icon name="recover" /></button><button className="text-button" onClick={() => void leaveMatch()}>BACK TO THE GARAGE <Icon name="arrow" size={16} /></button></div></div> : null}
+            {result && !resultVisible ? <div className="finish-callout" role="status">{result.reason === 'draw' ? 'DOUBLE KNOCKOUT' : result.reason === 'timeout' ? 'TIME DECISION' : 'ROBOT DESTROYED'}</div> : null}
+            {result && resultVisible ? <div className="match-overlay"><div className="result-panel"><span className="eyebrow">{result.winnerId === myId ? 'THE WINNER’S CIRCLE' : result.winnerId === null ? 'DRAW' : 'EVERY GREAT BOT GETS REBUILT'}</span><h2>{resultTitle}</h2><span className="result-method">{result.reason === 'knockout' ? 'KNOCKOUT' : result.reason === 'timeout' ? 'TIME DECISION' : result.reason === 'forfeit' ? 'FORFEIT' : result.reason.toUpperCase()}</span><div className="result-stats"><div><strong>{Math.round(local?.damageDealt ?? 0)}</strong><span>DAMAGE DEALT</span></div><div><strong>{local?.hits ?? 0}</strong><span>HITS LANDED</span></div><div><strong>{Math.ceil(local?.health ?? 0)}%</strong><span>HULL REMAINING</span></div></div><button className="button button-primary" disabled={rematchPending || status !== 'connected'} onClick={() => { connection.current?.rematch(); setRematchPending(true); }}>{rematchPending ? 'WAITING FOR OPPONENT' : 'RUN IT BACK'}<Icon name="recover" /></button><button className="text-button" onClick={() => void leaveMatch()}>BACK TO THE GARAGE <Icon name="arrow" size={16} /></button></div></div> : null}
             {status === 'reconnecting' || status === 'disconnected' ? <div className="connection-notice" role="status"><span className="loader" /><div><strong>{status === 'reconnecting' ? 'Reconnecting to your arena' : 'Connection interrupted'}</strong><span>Your bot stops safely while disconnected.</span></div>{status === 'disconnected' ? <button className="button button-secondary" onClick={() => { acceptSnapshots.current = true; void connection.current?.reconnect(); }}>RETRY</button> : null}</div> : null}
             {phase?.kind !== 'finished' ? <div className={`touch-controls ${!fighting ? 'touch-controls--inactive' : ''}`}>
               <div className="drive-control"><Joystick disabled={!fighting} onChange={(throttle, steer) => { input.current.throttle = throttle; input.current.steer = steer; renderer.current?.setInput({ ...input.current }); }} /><span>DRIVE <kbd>W A S D</kbd></span></div>
@@ -472,7 +486,7 @@ export function App() {
       <section className="garage-bottom" hidden={inRoom}><div className="bottom-note"><span className="outline-number">01</span><div><strong>CHOOSE. CHALLENGE. DESTROY.</strong><p>One arena. Two bots. No downloads between you and the action.</p></div></div><div className="control-preview"><span>DESKTOP</span><kbd>WASD</kbd><span>DRIVE</span><kbd>SPACE</kbd><span>WEAPON</span><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="View controls"><Icon name="help" size={17} /></button></div></section>
     </main>
 
-    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.5</span></span></footer>
+    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.6</span></span></footer>
 
     {error ? <div className="toast" role="alert"><Icon name="help" size={18} /><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="Dismiss message"><Icon name="close" size={16} /></button></div> : null}
 

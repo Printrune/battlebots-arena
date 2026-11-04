@@ -25,6 +25,10 @@ In the garage, drag the 3D view to inspect a bot from different angles. Use the 
 
 Matches last three minutes. A knockout ends a match immediately. Otherwise, the bot with more health wins. Equal health produces a draw.
 
+The defeated robot explodes after a knockout or time decision, scattering its remaining wheels and detachable armor. The camera follows the blast briefly before showing the result. The explosion cannot damage the winner. Mutual knockouts destroy both bots; a tied time decision or forfeit has no explosion. Rematches clear the smoke and debris and rebuild both robots.
+
+Steering follows the direction of travel: backing up reverses the turning arc, while steering with no throttle still pivots in place. Keyboard controls, the touch joystick, server handling and local prediction share this rule.
+
 Hits damage individual wheels, armor panels and the weapon assembly at the contact point. Dents, gouges, scorch marks and tire damage persist through the fight. Wheels and detachable armor can break off into physical debris. Missing wheels reduce speed and pull the bot toward one side, while a limp mode preserves steering. Losing all powered wheels starts a ten-second grounded count-out; the weapon and assigned hammers remain available.
 
 Watch the wheel indicators and weapon status beside the hull display. A damaged weapon spins up more slowly, and a destroyed motor cannot restart its rotor. Stored spinner inertia still coasts down. Rematches repair every component and remove debris. Damage and detached parts are server-owned and survive reconnecting. Durability and handling penalties are tuned for play rather than measured failure loads.
@@ -43,6 +47,7 @@ pnpm test
 pnpm verify:models
 pnpm verify:damage-models
 pnpm verify:life-bars
+pnpm verify:explosions
 pnpm verify:arena
 pnpm build
 ```

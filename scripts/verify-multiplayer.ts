@@ -238,11 +238,20 @@ async function main(): Promise<void> {
     assert.ok(first.snapshot?.players.some((player) => player.damageDealt > 0));
     report('combat-result', { ...firstPhase.result, players: first.snapshot?.players.map(({ name, health, hits }) => ({ name, health, hits })) });
     report('flight-and-landings', { maximumHeightAboveAxleFeet: first.maximumHeightFeet, airborneSnapshots: first.airborneSnapshots, hardLandingEvents: first.landingEvents });
+    const explosions = first.snapshot?.events.filter((event) => event.kind === 'explosion') ?? [];
+    const defeated = first.snapshot?.players.filter((player) => firstPhase.result.winnerId !== null
+      ? player.id !== firstPhase.result.winnerId : player.health === 0) ?? [];
+    assert.deepEqual(explosions.map((event) => event.targetId).sort(), defeated.map((player) => player.id).sort());
+    assert.deepEqual(explosions, second.snapshot?.events.filter((event) => event.kind === 'explosion'));
+    assert.ok(defeated.every((player) => player.health === 0 && player.damage.parts.every((part) => part.integrity === 0)));
+    report('defeat-explosions', { sharedEvents: explosions.length, wrecks: defeated.length, rigidDebris: first.snapshot?.debris.length });
 
     first.room.send('rematch');
     second.room.send('rematch');
     await waitFor('rematch lobby', () => first.snapshot?.phase.kind === 'lobby' && second.snapshot?.phase.kind === 'lobby');
     assert.ok(first.snapshot?.players.every((player) => player.health === 100 && player.damageDealt === 0));
+    assert.ok(first.snapshot?.events.every((event) => event.kind !== 'explosion'));
+    assert.equal(first.snapshot?.debris.length, 0);
     first.room.send('ready');
     second.room.send('ready');
     await waitFor('second fight', () => first.snapshot?.phase.kind === 'fighting' && second.snapshot?.phase.kind === 'fighting');
@@ -251,6 +260,7 @@ async function main(): Promise<void> {
     const forfeit = second.snapshot?.phase;
     assert.ok(forfeit?.kind === 'finished');
     assert.deepEqual(forfeit.result, { winnerId: second.room.sessionId, reason: 'forfeit' });
+    assert.ok(second.snapshot?.events.every((event) => event.kind !== 'explosion'));
     assert.deepEqual(first.errors, []);
     assert.deepEqual(second.errors, []);
     report('rematch-and-forfeit', { resetHealth: true, winnerId: forfeit.result.winnerId });

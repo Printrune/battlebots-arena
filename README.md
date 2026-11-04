@@ -6,7 +6,9 @@ A mobile-first 3D arcade game with private online 1v1 matches, an AI practice op
 
 The GitHub Pages edition runs solo practice in a browser worker. It uses the same Rapier simulation, opponent, damage, hazards and rematches as the server build. It needs no game server or password. GitHub Pages cannot host the live multiplayer server; online matches remain available in the server edition.
 
-Build the static edition with `pnpm build:pages`. The output is `dist/pages`, with assets rooted at `/battlebots-arena/`. The Pages workflow publishes it over HTTPS from `codex/arena-demo`.
+Play the free edition at [printrune.github.io/bb](https://printrune.github.io/bb/).
+
+Build the static edition with `pnpm build:pages`. The output is `dist/pages`, with assets rooted at `/bb/`. The Pages workflow publishes it over HTTPS from `codex/arena-demo`.
 
 In a compatible headset browser, start a match and select **Enter VR**. Practice waits for **Ready** on VR-capable browsers, allowing entry and permission prompts before combat starts. The player sits beside the BattleBox with head tracking and a fixed control tablet. Use the controller stick to drive, A/right trigger to toggle the weapon, B to recover and X to use pulverizers. The tablet also supports ray-selected actions, diagonal hold-to-drive controls, ready, rematch, recenter and exit. Bot impacts and defeat effects do not move the VR camera.
 

@@ -38,7 +38,7 @@ Controls must return to neutral when the XR session loses focus, a driving input
 
 The static build runs on GitHub Pages over HTTPS. Solo practice runs the same Rapier match simulation and opponent AI in a dedicated Web Worker on the player's device. The worker handles countdown, impacts, damage, hazards, defeat explosions and rematches. It advances from its timer and input messages through a single bounded physics clock, so an XR frame can keep the match responsive when browser page timers are throttled.
 
-Run `pnpm build:pages`, which sets `VITE_STATIC_HOSTING=true` and `VITE_BASE_PATH=/battlebots-arena/`. Vite builds the worker and resolves bundled assets under that project path. The Pages workflow publishes `dist/pages`. A repository hosted at a different project path needs the corresponding base path.
+Open [printrune.github.io/bb](https://printrune.github.io/bb/) to play. Run `pnpm build:pages`, which sets `VITE_STATIC_HOSTING=true` and `VITE_BASE_PATH=/bb/`. Vite builds the worker and resolves bundled assets under that project path. The Pages workflow publishes `dist/pages`. A repository hosted at a different project path needs the corresponding base path.
 
 GitHub Pages provides static files; it does not run a Node or WebSocket game server. The static build therefore provides solo practice and VR practice. Online create/join options require a separately hosted multiplayer server. [GitHub Pages documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages)
 

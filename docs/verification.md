@@ -2,6 +2,8 @@
 
 The v0.7 build was checked locally with the tests below. Measurements describe this computer and local connections. Load and detailed damage-transport measurements are retained from v0.5; the explosion presentation check is retained from v0.6.
 
+The current Pages build uses `/bb/`. The earlier release measurements below used the previous `/battlebots-arena/` path.
+
 ## Automated checks
 
 | Check | Result |

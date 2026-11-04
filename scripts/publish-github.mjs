@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 
 const owner = 'Printrune';
-const repository = 'battlebots-arena';
+const repository = 'bb';
 const execute = process.argv.includes('--publish');
 const publishPages = process.argv.includes('--pages');
 const commitMessage = process.argv.find((argument) => argument.startsWith('--message='))?.slice('--message='.length)

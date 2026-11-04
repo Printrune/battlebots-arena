@@ -28,6 +28,7 @@ export interface LifeBars {
   readonly stats: { bars: number; meshes: number; textures: number };
   setHealth(id: string, health: number): void;
   setPosition(id: string, position: Vector3): void;
+  setCamera(camera: Camera): void;
   pulse(dt: number): void;
   remove(id: string): void;
   clear(): void;
@@ -122,6 +123,7 @@ export function createLifeBars(scene: Scene, camera: Camera): LifeBars {
 
   return {
     nodes,
+    setCamera(next) { camera = next; },
     stats: { bars: CAPACITY, meshes: CAPACITY * 4, textures: bars.filter((bar) => bar.texture !== null).length },
     setHealth(id, incoming) {
       if (disposed) return;

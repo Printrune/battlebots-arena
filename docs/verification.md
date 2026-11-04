@@ -1,13 +1,17 @@
 # Release verification
 
-The local v0.6 production build was verified with the checks below. Measurements describe this computer and local connections. Load and detailed damage-transport measurements below are retained from v0.5.
+The v0.7 build was checked locally with the tests below. Measurements describe this computer and local connections. Load and detailed damage-transport measurements are retained from v0.5; the explosion presentation check is retained from v0.6.
 
 ## Automated checks
 
 | Check | Result |
 | --- | --- |
 | TypeScript and production client/server builds | Passed |
-| Simulation, impacts, flight, damage, hazards, render prediction, steering and authentication | 58 tests passed |
+| Simulation, impacts, flight, damage, hazards, prediction, steering, static practice, VR input and authentication | 67 tests passed |
+| Static practice | The real Rapier simulation completed countdown, combat, explosion and rematch in a browser Worker without login or a game server |
+| Worker clock | Timer and input wakes share a bounded accumulator; real tests verify no double-speed simulation and reject malformed worker commands |
+| VR input | Drift dead zone, both-hand action edges, single-controller fallback, HUD trigger conflict, pause baseline and non-XR cleanup passed |
+| VR tablet | Actual Babylon pointer events passed single/multiple pointer driving, diagonal holds, release outside the panel, pause neutralization, rematch and cleanup; 19 planes and one browser atlas |
 | Reverse steering | Real Rapier fixtures verify forward/reverse left and right travel arcs and stationary pivots for both bots; both fixtures failed before the fix |
 | Defeat explosion | Real simulation fixtures verify a single explosion, physical debris, unaffected winner, mutual knockout, time decision and rematch restoration |
 | Explosion renderer | Two pooled effects, 46 meshes, five materials, 4,084 triangles and no textures; flash, motion, expiry, capacity, reuse and disposal passed |
@@ -24,13 +28,19 @@ The local v0.6 production build was verified with the checks below. Measurements
 | Four rooms / eight clients | 29.972 authoritative updates per second per room over 20 seconds |
 | Room capacity | Fifth room rejected with 503 |
 
-The impact fixtures use actual Rapier bodies and contact geometry. They verify mass and off-center inertia response, reciprocal recoil, bounded rotor energy loss, and sequential mutual-hit resolution. A controlled full-speed Witch Doctor contact lifted Tombstone's center of mass approximately 2.14 feet without an imposed upward impulse. A normal v0.6 multiplayer fight observed 55 airborne player snapshots, four hard-landing events and a maximum axle height approximately 4.83 feet above its starting level.
+The impact fixtures use actual Rapier bodies and contact geometry. They verify mass and off-center inertia response, reciprocal recoil, bounded rotor energy loss, and sequential mutual-hit resolution. A controlled full-speed Witch Doctor contact lifted Tombstone's center of mass approximately 2.14 feet without an imposed upward impulse. A normal v0.7 multiplayer fight observed 65 airborne player snapshots, four hard-landing events and a maximum axle height approximately 5.60 feet above its starting level. Both clients agreed on the explosion, winner and rematch.
 
 Airborne fixtures verify gravity, angular motion and the absence of drive, braking or self-righting reaction forces without support. Actual floor contacts cause hard-landing damage once; resting contact and small bumps do not repeatedly damage a robot. Finished matches preserve an airborne wreck's trajectory while results, hazard time and damage stay frozen.
 
 The load test measured 0.945 ms average simulation work per update, a 183 ms maximum snapshot gap, and 103.4 MiB process RSS. It uses neutral driving with active spinners and does not represent maximum debris activity. Other local verification processes were running during this sample. The free Render blueprint remains limited to two rooms; cloud capacity must be measured separately.
 
 ## Browser checks
+
+The static build was served under `/battlebots-arena/` to exercise the same base path as GitHub Pages. Browser practice ran without a session API or WebSocket server. Live combat showed damage, airborne motion and the new VR setup control; one 844 × 390 sample reported 59 fps with no horizontal overflow. Starting practice, knockout, rematch and leaving were exercised through the interface. No browser errors were recorded.
+
+An isolated desktop preview rendered the same 3D VR tablet and BattleBox. Its atlas was upright and readable, and selecting the actual 3D weapon button changed the displayed state to weapon-on and 4,500 RPM. The preview exposed a center cage post blocking the initial station; both stations were moved four feet to the side and face the arena center. The fixed right-side tablet leaves the central view open. This checks canvas layout and mesh picking, not stereo rendering, headset comfort or physical controller support.
+
+VR materials compile during loading, headset rendering skips desktop camera follow and shake, and life bars use the active XR camera. The XR frame drives input sampling and publishes after held tablet controls have been combined with controller input. The send clock preserves its remainder at common headset refresh rates. Headset focus loss, source removal and native select-end release held driving input.
 
 The rebuilt BattleBox rendered in Chromium without console errors. The arena uses 68 meshes and 32,622 triangles, including 20 hazard mechanisms. Witch Doctor uses 22,488 triangles and 52 meshes; Tombstone uses 11,516 triangles and 36 meshes. Static geometry is merged within mechanical assemblies, preserving individual wheel and armor motion.
 
@@ -46,6 +56,6 @@ Scars are bounded at twelve per robot and detached rigid bodies at sixteen per r
 
 ## Remaining external checks
 
-Physical iPhone Safari and Android Chrome performance, touch feel, thermal behaviour, cloud-host capacity and real remote connections remain unverified. Rotor inertia, damage thresholds and hazard forces are game reconstruction choices, not measured team telemetry. See [impact design](impact-design.md) and [arena references](arena-references.md).
+Physical headset VR entry/exit, stereo images, actual hand/controller mappings, tracking, comfort and sustained frame rate remain unverified. Quest 3 is the first test target; other devices depend on their WebXR browser and available input. See [VR support](vr-support.md). Physical iPhone Safari and Android Chrome performance, touch feel, thermal behaviour, cloud-host capacity and real remote multiplayer remain unverified. Rotor inertia, damage thresholds and hazard forces are game reconstruction choices, not measured team telemetry. See [impact design](impact-design.md) and [arena references](arena-references.md).
 
 Run `pnpm verify:multiplayer`, `pnpm verify:damage-network`, `pnpm verify:arena-network` and `pnpm verify:load` against a deployed URL to repeat the transport and capacity checks. The arena network check takes about two and a half minutes and uses the actual production clock.

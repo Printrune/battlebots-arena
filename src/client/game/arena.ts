@@ -25,6 +25,9 @@ import { createLifeBars } from './life-bars';
 import { createExplosions } from './explosions';
 import { DEFEAT_REVEAL_SECONDS } from '../../shared/presentation';
 import { steeringForDrive } from '../../shared/driving';
+import { createVR } from './vr';
+import { createVRHud } from './vr-hud';
+import type { VRCallbacks } from '../../shared/vr';
 
 interface DisplayBot {
   model: BotModel;
@@ -42,7 +45,7 @@ interface Spark {
   life: number;
 }
 
-export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRenderer> {
+export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallbacks & { onFrame(): void }): Promise<ArenaRenderer> {
   const engine = new Engine(canvas, true, {
     preserveDrawingBuffer: false, stencil: false, powerPreference: 'high-performance',
     adaptToDeviceRatio: false, audioEngine: false,
@@ -92,6 +95,10 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   const lifeBars = createLifeBars(scene, camera);
   const debris = new DebrisRenderer(scene, (id) => bots.get(id)?.model);
   const explosions = createExplosions(scene);
+  const vrHud = createVRHud(scene, callbacks);
+  const vr = createVR(scene, camera, { ...callbacks, onInputLost: () => vrHud.releaseDrive() });
+  let lastVRFocus = false;
+  let lastVRActive = false;
   const previewId = 'preview-selected';
   const rivalId = 'preview-rival';
   let snapshot: MatchState | null = null;
@@ -221,6 +228,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   }
 
   function fitResolution(): void {
+    if (vr.active) return;
     const ratio = Math.min(window.devicePixelRatio || 1, 1.65);
     engine.setHardwareScalingLevel(1 / ratio);
     engine.resize();
@@ -261,7 +269,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   fitResolution();
   preview();
   // Compile the hidden impact overlay while loading, before the first real hit.
-  await Promise.all([explosions.ready(), ...[...bots.values()].map(async ({ model }) => {
+  const deskMaterials = new Map(vrHud.root.getChildMeshes().filter((mesh) => mesh.material).map((mesh) => [mesh.material, mesh]));
+  await Promise.all([explosions.ready(), ...[...deskMaterials].map(([material, mesh]) => material?.forceCompilationAsync(mesh)), ...[...bots.values()].map(async ({ model }) => {
     const scar = model.meshes.find((mesh) => mesh.name.includes('damage-scar-'));
     if (scar?.material) await scar.material.forceCompilationAsync(scar);
   })]);
@@ -274,6 +283,21 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     const blend = 1 - Math.exp(-dt * 14);
     const elapsed = Math.min((performance.now() - lastUpdateAt) / 1000, PHYSICS.maxPredictionSeconds);
     stage.pulse(time);
+    vr.pulse(dt);
+    const vrFocus = vr.active && vr.focused;
+    if (vrFocus !== lastVRFocus) {
+      lastVRFocus = vrFocus;
+      vrHud.setActive(vrFocus, vr.camera);
+    }
+    if (vr.active !== lastVRActive) {
+      lastVRActive = vr.active;
+      scene.shadowsEnabled = !vr.active;
+      if (!vr.active) fitResolution();
+    }
+    if (vr.active) shake = 0;
+    vrHud.pulse(dt);
+    if (vr.active) callbacks.onFrame();
+    lifeBars.setCamera(vr.camera);
 
     if (snapshot) {
       for (const [id, bot] of bots) {
@@ -331,7 +355,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       }
 
       const followed = localId ? bots.get(localId) : bots.values().next().value;
-      if (finishFocus && finishFocus.remaining > 0) {
+      if (!vr.active && finishFocus && finishFocus.remaining > 0) {
         const position = finishFocus.position;
         const yaw = followed?.cameraYaw ?? 0;
         desiredCamera.set(
@@ -345,7 +369,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         camera.setTarget(cameraTarget);
         finishFocus.remaining -= dt;
         canvas.dataset.opponentDirection = 'visible';
-      } else if (followed) {
+      } else if (!vr.active && followed) {
         const position = followed.model.root.position;
         const player = followed.state;
         followed.cameraYaw = player ? followHeading(followed.cameraYaw ?? player.yaw, player.yaw, player.grounded, dt) : 0;
@@ -395,7 +419,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       spark.mesh.scaling.setAll(Math.min(1, spark.life * 5));
       if (spark.life <= 0) spark.mesh.isVisible = false;
     }
-    if (shake > 0.002) {
+    if (!vr.active && shake > 0.002) {
       camera.position.x += (Math.random() - 0.5) * shake;
       camera.position.y += (Math.random() - 0.5) * shake;
       shake *= Math.exp(-dt * 12);
@@ -424,6 +448,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       snapshot = next;
       scene.fogDensity = 0.012;
       stage.setState(next.arena);
+      vr.setMatch(next, playerId);
+      vrHud.setMatch(next, playerId);
       localId = playerId;
       lastUpdateAt = performance.now();
       const ids = new Set(next.players.map((item) => item.id));
@@ -473,6 +499,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       explosions.clear();
       finishFocus = null;
       stage.setState(null);
+      vr.setMatch(null, null);
+      vrHud.setMatch(null, null);
       scene.fogDensity = overview ? 0.003 : 0.012;
       localId = null;
       input = { ...NEUTRAL_INPUT };
@@ -489,6 +517,12 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       scene.fogDensity = enabled ? 0.003 : 0.012;
     },
     setMuted(muted) { sound.setMuted(muted); },
+    async enterVR() {
+      if (!snapshot) throw new Error('Start a practice game or join a match before entering VR.');
+      await vr.enter();
+    },
+    async exitVR() { await vr.exit(); },
+    recenterVR() { vr.recenter(); if (vr.focused) vrHud.setActive(true, vr.camera); },
     dispose() {
       if (disposed) return;
       disposed = true;
@@ -502,6 +536,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       window.removeEventListener('pointerdown', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
       engine.stopRenderLoop();
+      vrHud.dispose();
+      vr.dispose();
       sound.dispose();
       debris.clear();
       lifeBars.dispose();

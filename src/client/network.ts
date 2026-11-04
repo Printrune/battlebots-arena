@@ -2,9 +2,11 @@ import { Client } from '@colyseus/sdk';
 import type { Room } from '@colyseus/sdk';
 import { matchSnapshotSchema } from '../shared/protocol';
 import type { JoinOptions, MatchState, PlayerInput } from '../shared/protocol';
+import { STATIC_HOSTING } from './config';
+import { createLocalPractice } from './local-practice';
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
-interface ConnectionOptions {
+export interface ConnectionOptions {
   onState(snapshot: MatchState, localId: string): void;
   onStatus(status: ConnectionStatus): void;
   onError(message: string): void;
@@ -12,6 +14,7 @@ interface ConnectionOptions {
 const SESSION_KEY = 'battlebots:reconnection';
 
 export function createConnection(options: ConnectionOptions) {
+  if (STATIC_HOSTING) return createLocalPractice(options);
   const client = new Client(window.location.origin);
   let room: Room<unknown> | null = null;
   let connected = false;

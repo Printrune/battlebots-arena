@@ -187,6 +187,9 @@ export interface ArenaRenderer {
   setPreview(botId: BotId, paint: PaintId): void;
   setOverview(enabled: boolean): void;
   setMuted(muted: boolean): void;
+  enterVR(): Promise<void>;
+  exitVR(): Promise<void>;
+  recenterVR(): void;
   dispose(): void;
 }
 

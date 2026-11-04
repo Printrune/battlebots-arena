@@ -1,11 +1,12 @@
 import type { CSSProperties } from 'react';
 
-type IconName = 'arrow' | 'plus' | 'link' | 'sound' | 'muted' | 'close' | 'check' | 'recover' | 'weapon' | 'hammer' | 'warning' | 'exit' | 'rotate' | 'copy' | 'signal' | 'help';
+type IconName = 'arrow' | 'plus' | 'link' | 'sound' | 'muted' | 'close' | 'check' | 'recover' | 'weapon' | 'hammer' | 'warning' | 'exit' | 'rotate' | 'copy' | 'signal' | 'help' | 'vr';
 
 export function Icon({ name, size = 20, style }: { name: IconName; size?: number; style?: CSSProperties }) {
   const paths: Record<IconName, React.ReactNode> = {
     arrow: <><path d="M4 12h15M13 5l7 7-7 7" /></>,
     plus: <path d="M12 4v16M4 12h16" />,
+    vr: <><path d="M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-5l-3-3-3 3H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z" /><circle cx="7" cy="11" r="2" /><circle cx="17" cy="11" r="2" /></>,
     link: <><path d="m10 14 4-4M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0M16 8l2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0" transform="translate(1 0) scale(.9)" /></>,
     sound: <><path d="m4 9 4 0 5-4v14l-5-4H4zM17 8a6 6 0 0 1 0 8M20 5a10 10 0 0 1 0 14" /></>,
     muted: <><path d="m4 9 4 0 5-4v14l-5-4H4zM17 9l5 6M22 9l-5 6" /></>,

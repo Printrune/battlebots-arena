@@ -2,14 +2,14 @@ import { performance } from 'node:perf_hooks';
 import { Room, ServerError } from '@colyseus/core';
 import type { AuthContext, Client } from '@colyseus/core';
 import {
-  BOTS, RECONNECT_SECONDS, SNAPSHOT_RATE, TICK_RATE,
+  RECONNECT_SECONDS, SNAPSHOT_RATE, TICK_RATE,
   joinOptionsSchema, playerInputSchema,
 } from '../shared/protocol';
 import { sessionValid, SESSION_COOKIE } from './auth';
 import type { AuthConfig } from './auth';
 import { createSimulation } from './simulation';
 import type { Simulation } from './simulation';
-import { PULVERIZERS, pulverizerHead } from '../shared/arena';
+import { practiceBotControls } from '../shared/practice-ai';
 
 interface RoomDependencies { auth: AuthConfig; maxRooms: number }
 export const roomMetrics = {
@@ -181,24 +181,10 @@ export function createArenaRoom(dependencies: RoomDependencies) {
     }
 
     private drivePracticeBot() {
-      const snapshot = this.simulation.snapshot();
-      const bot = snapshot.players.find((player) => player.id === 'practice-bot');
-      const human = snapshot.players.find((player) => player.id !== 'practice-bot');
-      if (!bot || !human) return;
-      if (PULVERIZERS.some((definition) => {
-        if (definition.ownerSlot !== bot.spawnSlot) return false;
-        const head = pulverizerHead(definition, 1.22);
-        return Math.hypot(human.position.x - head.x, human.position.z - head.z) < 3 && human.position.y < 2;
-      })) this.simulation.pulverize(bot.id);
-      const desired = Math.atan2(human.position.x - bot.position.x, human.position.z - bot.position.z);
-      const angle = Math.atan2(Math.sin(desired - bot.yaw), Math.cos(desired - bot.yaw));
-      const distance = Math.hypot(human.position.x - bot.position.x, human.position.z - bot.position.z);
-      this.botSequence += 1;
-      this.simulation.setInput(bot.id, {
-        seq: this.botSequence, throttle: Math.abs(angle) > 1.1 ? 0.15 : distance > 2 ? 0.8 : 0.4,
-        steer: Math.max(-1, Math.min(1, angle / BOTS[bot.botId].turnSpeed * 3)),
-        weapon: true, recover: this.botSequence % 120 === 0,
-      }, Date.now());
+      const controls = practiceBotControls(this.simulation.snapshot(), ++this.botSequence);
+      if (!controls) return;
+      if (controls.pulverize) this.simulation.pulverize('practice-bot');
+      this.simulation.setInput('practice-bot', controls.input, Date.now());
     }
   };
 }

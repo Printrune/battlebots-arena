@@ -19,5 +19,6 @@ jobs:
       - run: pnpm verify:damage-models
       - run: pnpm verify:life-bars
       - run: pnpm verify:explosions
+      - run: pnpm verify:vr-hud
       - run: pnpm verify:arena
       - run: pnpm build

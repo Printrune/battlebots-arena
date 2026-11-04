@@ -2,6 +2,16 @@
 
 A mobile-first 3D arcade game with private online 1v1 matches, an AI practice opponent, and a chase camera. Choose Witch Doctor or Tombstone, pick a paint colour, and share a match link with a friend.
 
+## Free GitHub practice and VR
+
+The GitHub Pages edition runs solo practice in a browser worker. It uses the same Rapier simulation, opponent, damage, hazards and rematches as the server build. It needs no game server or password. GitHub Pages cannot host the live multiplayer server; online matches remain available in the server edition.
+
+Build the static edition with `pnpm build:pages`. The output is `dist/pages`, with assets rooted at `/battlebots-arena/`. The Pages workflow publishes it over HTTPS from `codex/arena-demo`.
+
+In a compatible headset browser, start a match and select **Enter VR**. The player sits beside the BattleBox with head tracking and a fixed control tablet. Use the controller stick to drive, A/right trigger to toggle the weapon, B to recover and X to use pulverizers. The tablet also supports ray-selected actions, diagonal hold-to-drive controls, ready, rematch, recenter and exit. Bot impacts and defeat effects do not move the VR camera.
+
+Quest 3 is the first hardware target. Other headsets use runtime WebXR detection. No physical headset has been tested yet, so compatibility, controller mappings and sustained frame rate remain unverified. See [VR support and setup](docs/vr-support.md).
+
 ## Run locally
 
 Install Node.js 24 and pnpm 11.25. Run:
@@ -48,6 +58,7 @@ pnpm verify:models
 pnpm verify:damage-models
 pnpm verify:life-bars
 pnpm verify:explosions
+pnpm verify:vr-hud
 pnpm verify:arena
 pnpm build
 ```

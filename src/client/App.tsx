@@ -11,6 +11,8 @@ import type { ConnectionStatus } from './network';
 import { BotSilhouette, Icon } from './components/Icon';
 import { Joystick } from './components/Joystick';
 import { DEFEAT_REVEAL_SECONDS } from '../shared/presentation';
+import type { VRAction, VRStatus } from '../shared/vr';
+import { BASE_PATH, STATIC_HOSTING } from './config';
 
 const sessionSchema = z.object({ authenticated: z.boolean(), passwordRequired: z.boolean() });
 const errorSchema = z.object({ error: z.string() });
@@ -106,6 +108,10 @@ export function App() {
   const damageNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resultTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const baselineDamageOnNextSnapshot = useRef(true);
+  const vrSession = useRef(false);
+  const vrFocused = useRef(false);
+  const lastVRInputAt = useRef(0);
+  const vrAction = useRef<(action: VRAction) => void>(() => undefined);
 
   const [botId, setBotId] = useState<BotId>('witchdoctor');
   const [paint, setPaint] = useState<PaintId>('signature');
@@ -115,7 +121,7 @@ export function App() {
   const [inRoom, setInRoom] = useState(false);
   const [roomId, setRoomId] = useState('');
   const [status, setStatus] = useState<ConnectionStatus>('idle');
-  const [authentication, setAuthentication] = useState<Authentication>('checking');
+  const [authentication, setAuthentication] = useState<Authentication>(STATIC_HOSTING ? 'authenticated' : 'checking');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [busy, setBusy] = useState('');
@@ -124,6 +130,8 @@ export function App() {
   const [rendererError, setRendererError] = useState('');
   const [overview, setOverview] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [vrHelpOpen, setVRHelpOpen] = useState(false);
+  const [vrStatus, setVRStatus] = useState<VRStatus>({ kind: 'checking' });
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinCode, setJoinCode] = useState(initialRoom);
   const [copied, setCopied] = useState(false);
@@ -231,7 +239,30 @@ export function App() {
     const element = canvas.current;
     let cancelled = false;
     let instance: ArenaRenderer | null = null;
-    void import('./game/arena').then(({ createArena }) => createArena(element)).then((result) => {
+    void import('./game/arena').then(({ createArena }) => createArena(element, {
+      onStatus(next) {
+        vrSession.current = next.kind === 'active' || next.kind === 'paused';
+        vrFocused.current = next.kind === 'active';
+        if (!vrFocused.current) resetInput();
+        lastVRInputAt.current = 0;
+        setVRStatus(next);
+      },
+      onDrive(throttle, steer) {
+        input.current.throttle = vrFocused.current ? throttle : 0;
+        input.current.steer = vrFocused.current ? steer : 0;
+      },
+      onAction(action) { vrAction.current(action); },
+      onFrame() {
+        const now = performance.now();
+        const interval = 1000 / 30;
+        if (now - lastVRInputAt.current < interval) return;
+        lastVRInputAt.current = now - ((now - lastVRInputAt.current) % interval);
+        const canDrive = vrFocused.current && currentSnapshot.current?.phase.kind === 'fighting';
+        const packet = { ...(canDrive ? input.current : NEUTRAL_INPUT), seq: ++sequence.current };
+        renderer.current?.setInput(packet);
+        connection.current?.sendInput(packet);
+      },
+    })).then((result) => {
       if (cancelled) { result.dispose(); return; }
       instance = result;
       renderer.current = result;
@@ -255,6 +286,7 @@ export function App() {
   useEffect(() => { renderer.current?.setOverview(overview); }, [overview, rendererReady]);
 
   const checkSession = useCallback(async () => {
+    if (STATIC_HOSTING) { setAuthentication('authenticated'); return; }
     setAuthentication('checking'); setAuthError('');
     try {
       const response = await fetch('/api/session', { credentials: 'same-origin' });
@@ -277,7 +309,7 @@ export function App() {
       if (cancelled || activeRoom.current) return;
       if (!found) {
         acceptSnapshots.current = false;
-        if (initialRoom()) setJoinOpen(true);
+        if (initialRoom() && !STATIC_HOSTING) setJoinOpen(true);
       }
     });
     return () => { cancelled = true; };
@@ -286,6 +318,7 @@ export function App() {
   useEffect(() => {
     if (!inRoom) return;
     const interval = setInterval(() => {
+      if (vrSession.current) return;
       const canDrive = currentSnapshot.current?.phase.kind === 'fighting' && document.visibilityState === 'visible';
       const packet: PlayerInput = { ...(canDrive ? input.current : NEUTRAL_INPUT), seq: ++sequence.current };
       renderer.current?.setInput(packet);
@@ -342,12 +375,13 @@ export function App() {
       if (!event.repeat && key === 'h') pulverize();
     }
     function keyUp(event: KeyboardEvent) { keys.current.delete(event.key.toLowerCase()); updateDrive(); }
-    function hide() { if (document.visibilityState !== 'visible') resetInput(); }
+    function hide() { if (!vrSession.current && document.visibilityState !== 'visible') resetInput(); }
+    function blur() { if (!vrSession.current) resetInput(); }
     window.addEventListener('keydown', keyDown); window.addEventListener('keyup', keyUp);
-    window.addEventListener('blur', resetInput); document.addEventListener('visibilitychange', hide);
+    window.addEventListener('blur', blur); document.addEventListener('visibilitychange', hide);
     return () => {
       window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp);
-      window.removeEventListener('blur', resetInput); document.removeEventListener('visibilitychange', hide);
+      window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', hide);
       if (recoveryTimer.current) clearTimeout(recoveryTimer.current);
     };
   }, [helpOpen, pulverize, recover, resetInput, toggleWeapon]);
@@ -399,6 +433,7 @@ export function App() {
   }
 
   async function leaveMatch() {
+    await renderer.current?.exitVR().catch(() => undefined);
     if (resultTimer.current) clearTimeout(resultTimer.current);
     setResultVisible(false);
     acceptSnapshots.current = false; activeRoom.current = false; resetInput();
@@ -419,10 +454,30 @@ export function App() {
   const isBusy = busy !== '';
   const result = phase?.kind === 'finished' ? phase.result : null;
   const resultTitle = !result ? '' : result.winnerId === null ? 'A battle well fought.' : result.winnerId === myId ? 'Victory is yours.' : 'Back to the workshop.';
+  const immersive = vrStatus.kind === 'active' || vrStatus.kind === 'paused';
+  const canEnterVR = vrStatus.kind === 'available';
+  async function enterVR() {
+    setError('');
+    try { await renderer.current?.enterVR(); }
+    catch (cause: unknown) { setError(cause instanceof Error ? cause.message : 'VR could not start. Try again in your headset browser.'); }
+  }
+  vrAction.current = (action) => {
+    switch (action) {
+      case 'weapon': toggleWeapon(); break;
+      case 'recover': recover(); break;
+      case 'pulverize': pulverize(); break;
+      case 'ready': if (currentSnapshot.current?.phase.kind === 'lobby') connection.current?.ready(); break;
+      case 'rematch': if (currentSnapshot.current?.phase.kind === 'finished') { connection.current?.rematch(); setRematchPending(true); } break;
+      case 'leave': void leaveMatch(); break;
+      case 'exit': void renderer.current?.exitVR().catch(() => undefined); break;
+      case 'recenter': renderer.current?.recenterVR(); break;
+      default: { const unexpected: never = action; throw new Error(`Unknown VR action: ${unexpected}`); }
+    }
+  };
 
   return <div className={`app ${inRoom ? 'app--match' : ''}`}>
     <header className="site-header" hidden={inRoom}>
-      <a href="/" className="wordmark" aria-label="BattleBots Arena home"><span>BATTLE<span className="wordmark-bots">BOTS</span><sup>®</sup></span><small>ARENA</small></a>
+      <a href={BASE_PATH} className="wordmark" aria-label="BattleBots Arena home"><span>BATTLE<span className="wordmark-bots">BOTS</span><sup>®</sup></span><small>ARENA</small></a>
       <nav className="header-nav" aria-label="Main navigation"><span className="nav-active">THE GARAGE</span><button onClick={() => setHelpOpen(true)}>HOW TO PLAY <Icon name="arrow" size={14} /></button></nav>
       <div className="header-right"><span className="alpha-badge"><i /> PLAYABLE ALPHA</span><button className="icon-button sound-button" onClick={() => setMuted(!muted)} aria-label={muted ? 'Turn sound on' : 'Mute sound'}><Icon name={muted ? 'muted' : 'sound'} /></button></div>
     </header>
@@ -430,7 +485,7 @@ export function App() {
     <main className={inRoom ? 'match-main' : 'garage-main'}>
       <section className="hero" hidden={inRoom}>
         <div><div className="eyebrow hero-eyebrow"><span className="status-dot" /> ROBOT FIGHTING. NO HOLDING BACK.</div><h1>BUILT TO<br /><span>BREAK THINGS.</span></h1></div>
-        <div className="hero-copy"><span className="index-label">01 / ENTER THE ARENA</span><p>Your favorite bots. Your controls.<br />Challenge a friend. Settle it in the BattleBox.</p><div className="hero-facts"><span>REAL-TIME 1V1</span><i /><span>PLAY IN YOUR BROWSER</span></div></div>
+        <div className="hero-copy"><span className="index-label">01 / ENTER THE ARENA</span><p>Your favorite bots. Your controls.<br />{STATIC_HOSTING ? "Face the House Robot. Settle it in the BattleBox." : "Challenge a friend. Settle it in the BattleBox."}</p><div className="hero-facts"><span>{STATIC_HOSTING ? "FREE SOLO PRACTICE" : "REAL-TIME 1V1"}</span><i /><span>PLAY IN YOUR BROWSER</span></div></div>
       </section>
 
       <div className="arena-layout">
@@ -443,13 +498,13 @@ export function App() {
             <div className="preview-corner"><span className="live-pill"><i /> LIVE 3D PREVIEW</span><button className="arena-view-toggle" onClick={() => setOverview((enabled) => !enabled)} aria-pressed={overview}>{overview ? 'BACK TO ROBOT' : 'INSPECT BATTLEBOX'}<Icon name="arrow" size={12} /></button></div>
             <div className="preview-reticle preview-reticle--tl" /><div className="preview-reticle preview-reticle--br" />
             <div className="preview-info"><div><span className="preview-number">{overview ? '48' : selectedBot.number}</span><div><span className="eyebrow">{overview ? '48 × 48 FT' : selectedBot.category}</span><h2>{overview ? 'THE BATTLEBOX' : selectedBot.name}</h2><p>{overview ? 'Steel floor · Upper Deck · active hazards' : selectedBot.tagline}</p><span className="bot-version">{overview ? 'WCVII-ERA ARENA' : botVersion}</span></div></div>{!overview ? <span className="preview-weight">250<span>LB<br />CLASS</span></span> : null}</div>
-            <div className="preview-bottom"><span>DRAG TO INSPECT <span className="preview-zoom-hint">· SCROLL TO ZOOM</span></span><span>3D PROTOTYPE <i /> ARENA V0.6</span></div>
+            <div className="preview-bottom"><span>DRAG TO INSPECT <span className="preview-zoom-hint">· SCROLL TO ZOOM</span></span><span>3D PROTOTYPE <i /> ARENA V0.7</span></div>
           </> : <>
             <div className="match-header"><HealthBar player={local} local /><div className="match-clock"><span>{phase?.kind === 'finished' ? 'MATCH ENDED' : phase?.kind === 'fighting' ? 'ROUND 01' : 'BATTLEBOTS ARENA'}</span><strong>{phase?.kind === 'finished' ? 'FINAL' : phase?.kind === 'fighting' ? formatTime(phase.seconds) : formatTime(MATCH_SECONDS)}</strong><span className={`connection-label ${status === 'connected' || phase?.kind === 'finished' ? '' : 'connection-label--lost'}`}><i />{phase?.kind === 'finished' ? 'COMPLETE' : status === 'connected' ? 'LIVE' : status.toUpperCase()}</span></div><HealthBar player={opponent} /></div>
             {fighting ? <div className={`arena-hazards ${sawCutting ? 'arena-hazards--cutting' : sawWarning ? 'arena-hazards--warning' : ''}`} aria-label="Arena hazard status"><span className="hazard-saws"><i />KILLSAWS {sawUnlockIn > 0 ? <>IN <strong>{formatTime(sawUnlockIn)}</strong></> : <strong>{sawCutting ? 'CUTTING' : sawWarning ? 'WARNING' : 'ARMED'}</strong>}</span><span className="hazard-screws">SCREWS <strong>{snapshot?.arena.hazards.some((hazard) => hazard.kind === 'screw' && hazard.active) ? 'LIVE' : 'STANDBY'}</strong></span></div> : null}
             {fighting && countedOutPlayer ? <div className={`countout-notice ${countedOutPlayer.id === myId ? 'countout-notice--local' : ''}`} role="status" aria-live="off"><strong>{countoutRemaining}</strong><div><span>{countedOutPlayer.id === myId ? 'MOBILITY LOST' : 'OPPONENT IMMOBILIZED'}</span><small>COUNT OUT · {countedOutPlayer.id === myId ? 'KEEP FIGHTING' : 'KEEP THE PRESSURE ON'}</small></div></div> : null}
             {fighting && damageNotice ? <div className="damage-notice" role="status"><Icon name="warning" size={19} /><div><strong>{damageNotice.title}</strong><span>{damageNotice.detail}</span></div></div> : null}
-            <div className="match-utility"><button className="icon-button" onClick={() => setMuted(!muted)} aria-label={muted ? 'Turn sound on' : 'Mute sound'}><Icon name={muted ? 'muted' : 'sound'} /></button><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="How to play"><Icon name="help" /></button><button className="icon-button" onClick={() => void leaveMatch()} aria-label="Leave match"><Icon name="exit" /></button></div>
+            <div className="match-utility"><button className="vr-button" disabled={vrStatus.kind === "entering"} aria-label={immersive ? "Exit VR" : canEnterVR ? "Enter VR" : "VR setup"} onClick={() => { if (immersive) void renderer.current?.exitVR().catch(() => undefined); else if (canEnterVR) void enterVR(); else setVRHelpOpen(true); }}><Icon name="vr" size={20} /><span>{immersive ? "EXIT VR" : vrStatus.kind === "entering" ? "STARTING" : "VR"}</span></button><button className="icon-button" onClick={() => setMuted(!muted)} aria-label={muted ? 'Turn sound on' : 'Mute sound'}><Icon name={muted ? 'muted' : 'sound'} /></button><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="How to play"><Icon name="help" /></button><button className="icon-button" onClick={() => void leaveMatch()} aria-label="Leave match"><Icon name="exit" /></button></div>
             {phase?.kind === 'lobby' ? <div className="match-overlay"><div className="lobby-panel"><span className="eyebrow"><span className="status-dot" /> YOUR BATTLEBOX IS READY</span><h2>{opponent ? 'Face to face.' : 'Who’s your challenger?'}</h2><p>{opponent ? 'Both drivers must be ready before the battle begins.' : 'Send your invitation to a friend. They can join from any browser.'}</p><div className="invite-box"><span>PRIVATE ROOM <strong>{roomId}</strong></span><button className="icon-button" onClick={() => void copyInvite()} aria-label="Copy invitation link"><Icon name={copied ? 'check' : 'copy'} /></button></div><input className="invite-link" value={inviteUrl} readOnly aria-label="Invitation link" onFocus={(event) => event.currentTarget.select()} /><div className="lobby-seats"><span><i className={local?.ready ? 'is-ready' : ''} />{local?.name ?? 'You'} {local?.ready ? '· READY' : ''}</span><span><i className={opponent?.ready ? 'is-ready' : ''} />{opponent?.name ?? 'Waiting for opponent'} {opponent?.ready ? '· READY' : ''}</span></div><button className="button button-primary" disabled={local?.ready || status !== 'connected'} onClick={() => connection.current?.ready()}>{local?.ready ? <><Icon name="check" /> READY TO RUMBLE</> : <>I’M READY <Icon name="arrow" /></>}</button><button className="text-button" onClick={() => void copyInvite()}>{copied ? 'INVITATION COPIED' : 'COPY INVITATION LINK'}</button></div></div> : null}
             {phase?.kind === 'countdown' ? <div className="countdown-overlay"><span>IT’S ROBOT FIGHTING TIME</span><strong key={Math.ceil(phase.seconds)}>{Math.max(1, Math.ceil(phase.seconds))}</strong><span>GET READY</span></div> : null}
             {result && !resultVisible ? <div className="finish-callout" role="status">{result.reason === 'draw' ? 'DOUBLE KNOCKOUT' : result.reason === 'timeout' ? 'TIME DECISION' : 'ROBOT DESTROYED'}</div> : null}
@@ -479,14 +534,15 @@ export function App() {
           </div>
           <div className="bot-specs"><div className="spec"><span>DRIVE</span><strong>{selectedBot.physics.wheelZ.length * 2}WD</strong></div><div className="spec"><span>WEAPON</span><strong>{selectedBot.weapon.kind === 'vertical-disc' ? 'VERTICAL DRISC' : 'HORIZONTAL BAR'}</strong></div><div className="spec"><span>RECOVERY</span><strong>{selectedBot.physics.selfRight ? 'ACTIVE SELF-RIGHT' : selectedBot.physics.invertible ? 'INVERTIBLE' : 'NONE'}</strong></div></div>
           <div className="paint-row"><div><span className="eyebrow">MAKE IT YOURS</span><span className="paint-name">{PAINTS.find((item) => item.id === paint)?.name}</span></div><div className="paint-options" role="group" aria-label="Robot paint">{PAINTS.map((option) => <button key={option.id} className={`paint-chip ${paint === option.id ? 'paint-chip--selected' : ''}`} onClick={() => setPaint(option.id)} aria-label={`${option.name} paint`} aria-pressed={paint === option.id}><i style={{ backgroundColor: paintColor(botId, option.id) }} />{paint === option.id ? <Icon name="check" size={13} /> : null}</button>)}</div></div>
-          <div className="setup-actions"><label className="driver-label" htmlFor="driver-name">DRIVER NAME <span>YOUR CALL SIGN</span></label><input id="driver-name" className="text-input driver-input" value={driverName} maxLength={20} onChange={(event) => setDriverName(event.target.value)} placeholder="Driver" autoComplete="nickname" /><button className="button button-primary host-button" onClick={() => void createMatch(false)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}><span>{isBusy ? busy.toUpperCase() : 'CREATE A MATCH'}</span><Icon name="arrow" /></button><button className="button button-secondary" onClick={() => setJoinOpen(true)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}><Icon name="link" size={18} /> JOIN A FRIEND</button><div className="practice-row"><span>FIRST TIME IN THE BOX?</span><button onClick={() => void createMatch(true)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}>TRY PRACTICE <Icon name="arrow" size={14} /></button></div></div>
+          <div className="setup-actions"><label className="driver-label" htmlFor="driver-name">DRIVER NAME <span>YOUR CALL SIGN</span></label><input id="driver-name" className="text-input driver-input" value={driverName} maxLength={20} onChange={(event) => setDriverName(event.target.value)} placeholder="Driver" autoComplete="nickname" /><button className="button button-primary host-button" onClick={() => void createMatch(STATIC_HOSTING)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}><span>{isBusy ? busy.toUpperCase() : STATIC_HOSTING ? 'PLAY PRACTICE' : 'CREATE A MATCH'}</span><Icon name="arrow" /></button><button className="button button-secondary" onClick={() => STATIC_HOSTING ? setVRHelpOpen(true) : setJoinOpen(true)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}><Icon name={STATIC_HOSTING ? "vr" : "link"} size={18} /> {STATIC_HOSTING ? "VR SETUP" : "JOIN A FRIEND"}</button><div className="practice-row"><span>FIRST TIME IN THE BOX?</span><button onClick={() => void createMatch(true)} disabled={isBusy || !rendererReady || authentication !== 'authenticated'}>TRY PRACTICE <Icon name="arrow" size={14} /></button></div></div>
+          <div className="vr-intro"><Icon name="vr" size={26} /><div><strong>{STATIC_HOSTING ? "FREE GITHUB PRACTICE · VR" : "STEP INSIDE THE BATTLEBOX"}</strong><p>{STATIC_HOSTING ? "Solo physics runs on your device. Online matches use the server edition." : "Use a compatible headset browser for a seat beside the arena."}</p><button className="text-button" onClick={() => setVRHelpOpen(true)}>HEADSET SETUP <Icon name="arrow" size={12} /></button></div></div>
         </aside>
       </div>
 
       <section className="garage-bottom" hidden={inRoom}><div className="bottom-note"><span className="outline-number">01</span><div><strong>CHOOSE. CHALLENGE. DESTROY.</strong><p>One arena. Two bots. No downloads between you and the action.</p></div></div><div className="control-preview"><span>DESKTOP</span><kbd>WASD</kbd><span>DRIVE</span><kbd>SPACE</kbd><span>WEAPON</span><button className="icon-button" onClick={() => setHelpOpen(true)} aria-label="View controls"><Icon name="help" size={17} /></button></div></section>
     </main>
 
-    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.6</span></span></footer>
+    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.7</span></span></footer>
 
     {error ? <div className="toast" role="alert"><Icon name="help" size={18} /><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="Dismiss message"><Icon name="close" size={16} /></button></div> : null}
 
@@ -495,6 +551,8 @@ export function App() {
     </Modal> : null}
 
     {joinOpen && authentication === 'authenticated' ? <Modal title="Meet in the BattleBox." onClose={() => setJoinOpen(false)}><form onSubmit={(event) => void joinMatch(event)}><p>Paste your friend’s invitation link or enter their private room code. Your selected bot comes with you.</p><label className="field-label" htmlFor="room-code">INVITATION LINK OR ROOM CODE</label><input id="room-code" className="text-input" value={joinCode} onChange={(event) => setJoinCode(event.target.value)} placeholder="Paste invitation or enter code" required autoComplete="off" /><div className="join-selection"><span style={{ color: paintColor(botId, paint) }}><BotSilhouette horizontal={botId === 'tombstone'} /></span><div><small>YOUR MACHINE</small><strong>{selectedBot.name}</strong><span>{driverName.trim() || 'Driver'}</span></div></div><button className="button button-primary" disabled={isBusy}>{isBusy ? 'JOINING…' : 'JOIN THE ARENA'}<Icon name="arrow" /></button></form></Modal> : null}
+
+    {vrHelpOpen ? <Modal title="Step inside the BattleBox." onClose={() => setVRHelpOpen(false)}><p>Open this page in your headset browser. Start a match, then select <strong>Enter VR</strong> in the arena.</p><div className="vr-guide"><p><strong>Your driver station.</strong> Look around from a fixed seat beside the BattleBox. Impacts and explosions keep your view steady. Use Recenter on the floating panel to reset your seat.</p><p><strong>Controllers.</strong> Use the left stick to drive. A or the right trigger toggles the weapon. B operates recovery; X operates your pulverizers. Button names vary by controller.</p><p><strong>Hands or gaze.</strong> Point and select the floating panel. Hold a direction or diagonal to drive. Ready, rematch and Exit VR are available inside the headset.</p><p>{STATIC_HOSTING ? "This free GitHub edition supports solo practice. Multiplayer needs the server edition." : "Quest Browser and other compatible WebXR browsers need an HTTPS game address."}</p><p className="vr-availability" role="status">{vrStatus.kind === "unavailable" ? vrStatus.reason : vrStatus.kind === "checking" ? "Checking this browser for VR support…" : "VR is available in this browser. Start a match to enter."}</p><p>Quest 3 is the first target. Other headsets depend on their browser and input support; physical headset testing is still pending.</p></div><button className="button button-primary" onClick={() => setVRHelpOpen(false)}>BACK TO THE GARAGE <Icon name="arrow" /></button></Modal> : null}
 
     {helpOpen ? <Modal title="Make some mayhem." onClose={() => setHelpOpen(false)}><p>Choose a bot, invite a friend, and hit Ready. You have three minutes to finish the job.</p><div className="howto-list"><div><span>01</span><div><strong>Drive with intent.</strong><p>Use the left joystick or WASD. Push up to accelerate, down to reverse, and left or right to steer. Momentum carries into a hit, and off-center impacts can turn or flip a bot. Steering needs wheels on the ground. In the garage, drag the 3D preview to inspect your machine.</p></div></div><div><span>02</span><div><strong>Give your weapon time.</strong><p>Tap Spin Up or press Space to toggle your weapon. In this build, Witch Doctor spins up in {BOTS.witchdoctor.weapon.spinUpSeconds.toFixed(1)}s and Tombstone in {BOTS.tombstone.weapon.spinUpSeconds.toFixed(1)}s. Hits drain RPM, so allow your weapon to regain speed.</p></div></div><div><span>03</span><div><strong>Know your recovery.</strong><p>Witch Doctor has active self-righting. Tap Self Right or press R, then wait for its cooldown. Tombstone has no self-righter; it can keep driving upside down. Win by knockout or have more hull health when time runs out.</p></div></div><div><span>04</span><div><strong>Make the BattleBox work for you.</strong><p>Tap Pulverizers or press H to swing your two assigned corner hammers, then wait for their cooldown. Keep clear of the live screws and use the raised Upper Deck to change the fight. Killsaws activate only in the final minute; watch for their warning before the blades rise.</p></div></div><div><span>05</span><div><strong>Protect the parts that keep you fighting.</strong><p>Hits and hard landings damage the parts that take the impact. Wheels and armor can break away, but remaining wheels let you limp on. A damaged weapon loses effectiveness; a destroyed weapon cannot spin. Losing every driven wheel starts a {IMMOBILIZATION_SECONDS}-second countout. Your weapon and assigned hammers remain usable during the count.</p></div></div></div><button className="button button-primary" onClick={() => setHelpOpen(false)}>GOT IT. LET’S FIGHT. <Icon name="arrow" /></button></Modal> : null}
   </div>;

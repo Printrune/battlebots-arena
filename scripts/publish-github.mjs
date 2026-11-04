@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 const owner = 'Printrune';
 const repository = 'battlebots-arena';
 const execute = process.argv.includes('--publish');
+const publishPages = process.argv.includes('--pages');
 const commitMessage = process.argv.find((argument) => argument.startsWith('--message='))?.slice('--message='.length)
   || 'Build mobile BattleBots arena with private multiplayer';
 
@@ -38,6 +39,22 @@ if (repositoryResponse.status === 404) {
   if (!created.ok) throw new Error(`Repository creation failed: ${created.status} ${await created.text()}`);
 } else if (!repositoryResponse.ok) {
   throw new Error(`Cannot inspect repository: ${repositoryResponse.status}`);
+}
+
+if (publishPages) {
+  const current = await github(`/repos/${owner}/${repository}/pages`);
+  if (current.status === 404) {
+    const configured = await github(`/repos/${owner}/${repository}/pages`, { method: 'POST', body: JSON.stringify({ build_type: 'workflow' }) });
+    if (!configured.ok) throw new Error(`GitHub Pages configuration failed: ${configured.status} ${await configured.text()}`);
+  } else if (!current.ok) {
+    throw new Error(`Cannot inspect GitHub Pages: ${current.status}`);
+  } else {
+    const site = await current.json();
+    if (site.build_type !== 'workflow') {
+      const configured = await github(`/repos/${owner}/${repository}/pages`, { method: 'PUT', body: JSON.stringify({ build_type: 'workflow' }) });
+      if (!configured.ok) throw new Error(`GitHub Pages workflow configuration failed: ${configured.status}`);
+    }
+  }
 }
 
 const branch = git(['branch', '--show-current']);

@@ -15,6 +15,7 @@ import type { VRCallbacks, VRStatus } from '../../shared/vr';
 import { readVRInput } from './vr-input';
 import type { VRControllerSample } from './vr-input';
 import { VRDiagnostics } from './vr-diagnostics';
+import { attachVRLayers, prepareVRLayers } from './vr-layers';
 
 export const VR_FEET_PER_METER = 3.28084;
 export const VR_CONTROLLER_PROFILE = 'generic-trigger';
@@ -57,6 +58,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
   let input: WebXRInput | null = null;
   let selection: WebXRControllerPointerSelection | null = null;
   let renderTarget: WebXRRenderTarget | null = null;
+  let projectionDepth: Pick<XRProjectionLayerInit, 'depthFormat'> = { depthFormat: 0x1902 };
   let match: MatchState | null = null;
   let stationSlot = 0;
   let disposed = false;
@@ -198,6 +200,15 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         return;
       }
       if (disposed) return;
+      const canvas = scene.getEngine().getRenderingCanvas();
+      const gl = canvas ? canvas.getContext('webgl2') ?? canvas.getContext('webgl') : null;
+      if (gl) {
+        // Layers attach during session initialization, before the legacy output
+        // canvas awaits compatibility. Finish it while preparing the VR button.
+        if (typeof gl.makeXRCompatible === 'function') await gl.makeXRCompatible();
+        projectionDepth = { depthFormat: 'texImage3D' in gl ? 0x81a6 : 0x1902 };
+      }
+      if (disposed) return;
       const experience = await WebXRExperienceHelper.CreateAsync(scene);
       if (disposed) { experience.dispose(); return; }
       helper = experience;
@@ -272,7 +283,10 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         }
       });
       helper.sessionManager.onXRSessionInit.add((session) => {
-        if (helper && renderTarget) diagnostics.start(session, helper, renderTarget);
+        if (helper) {
+          attachVRLayers(helper.featuresManager);
+          diagnostics.start(session, helper);
+        }
         const visibility = () => {
           diagnostics.visibility(session.visibilityState);
           neutral();
@@ -313,6 +327,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       diagnostics.request();
       watchForFailures();
       try {
+        prepareVRLayers(helper.featuresManager, projectionDepth);
         await helper.enterXRAsync('immersive-vr', 'local-floor', renderTarget, { optionalFeatures: ['local-floor', 'hand-tracking'] });
         diagnostics.renderingReady();
       } catch (cause: unknown) {

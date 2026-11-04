@@ -1,10 +1,10 @@
 import { SceneInstrumentation } from '@babylonjs/core/Instrumentation/sceneInstrumentation';
 import { WebXRTrackingState } from '@babylonjs/core/XR/webXRTypes';
+import { WebGLRenderTargetWrapper } from '@babylonjs/core/Engines/WebGL/webGLRenderTargetWrapper';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import type { Scene } from '@babylonjs/core/scene';
 import type { WebXRCamera } from '@babylonjs/core/XR/webXRCamera';
 import type { WebXRExperienceHelper } from '@babylonjs/core/XR/webXRExperienceHelper';
-import type { WebXRRenderTarget } from '@babylonjs/core/XR/webXRTypes';
 import { version } from '../../../package.json';
 import { isFatalXRGlError, xrHealthFailure } from './vr-health';
 
@@ -16,6 +16,7 @@ export interface VRDiagnosticReport {
   state: 'idle' | 'requested' | 'presenting' | 'ended' | 'failed';
   elapsedMs: number;
   renderLoopReady: boolean;
+  renderPath: 'uninitialized' | 'projection' | 'legacy';
   nativeFrames: number;
   validPoseFrames: number;
   drawFrames: number;
@@ -39,7 +40,7 @@ export interface VRDiagnosticReport {
 
 function emptyReport(): VRDiagnosticReport {
   return {
-    version, state: 'idle', elapsedMs: 0, renderLoopReady: false, nativeFrames: 0, validPoseFrames: 0, drawFrames: 0,
+    version, state: 'idle', elapsedMs: 0, renderLoopReady: false, renderPath: 'uninitialized', nativeFrames: 0, validPoseFrames: 0, drawFrames: 0,
     eyeDrawPasses: 0, drawCalls: 0, eyes: 0, outputTargets: 0,
     framebufferWidth: 0, framebufferHeight: 0, framebufferStatus: null,
     targetMatches: null, opaqueFramebuffer: null, viewports: {}, glErrors: [], priorGlErrors: [],
@@ -51,7 +52,6 @@ function emptyReport(): VRDiagnosticReport {
 export class VRDiagnostics {
   private report = emptyReport();
   private helper: WebXRExperienceHelper | null = null;
-  private target: WebXRRenderTarget | null = null;
   private session: XRSession | null = null;
   private instrumentation: SceneInstrumentation | null = null;
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -93,8 +93,8 @@ export class VRDiagnostics {
     }
   }
 
-  start(session: XRSession, helper: WebXRExperienceHelper, target: WebXRRenderTarget): void {
-    this.session = session; this.helper = helper; this.target = target;
+  start(session: XRSession, helper: WebXRExperienceHelper): void {
+    this.session = session; this.helper = helper;
     this.report.state = 'presenting';
     this.instrumentation = new SceneInstrumentation(this.scene);
     this.visibility(session.visibilityState);
@@ -104,6 +104,7 @@ export class VRDiagnostics {
   renderingReady(): void {
     if (!this.session || this.report.renderLoopReady) return;
     this.report.renderLoopReady = true;
+    this.updateRenderPath();
     // Native reference-space and framebuffer setup precede the XR render loop.
     this.visibleSince = performance.now();
   }
@@ -133,7 +134,7 @@ export class VRDiagnostics {
   failure(message: string): void { this.report.lastFailure = message; this.report.state = 'failed'; }
 
   compact(): string {
-    return `XR frames=${this.report.nativeFrames}, poses=${this.report.validPoseFrames}, draws=${this.report.drawFrames}, eyes=${this.report.eyes}, targets=${this.report.outputTargets}, GL=${this.report.glErrors.map((code) => `0x${code.toString(16)}`).join(',') || '0'}, FBO=${this.report.framebufferStatus === null ? 'unseen' : `0x${this.report.framebufferStatus.toString(16)}`}, visibility=${this.report.visibility}`;
+    return `XR path=${this.report.renderPath}, frames=${this.report.nativeFrames}, poses=${this.report.validPoseFrames}, draws=${this.report.drawFrames}, eyes=${this.report.eyes}, targets=${this.report.outputTargets}, GL=${this.report.glErrors.map((code) => `0x${code.toString(16)}`).join(',') || '0'}, FBO=${this.report.framebufferStatus === null ? 'unseen' : `0x${this.report.framebufferStatus.toString(16)}`}, visibility=${this.report.visibility}`;
   }
 
   getReport(): string {
@@ -148,7 +149,7 @@ export class VRDiagnostics {
     if (this.session) {
       if (this.report.lastFailure === null) this.report.state = 'ended';
     }
-    this.session = null; this.helper = null; this.target = null;
+    this.session = null; this.helper = null;
     this.instrumentation?.dispose(); this.instrumentation = null;
   }
 
@@ -164,23 +165,33 @@ export class VRDiagnostics {
     return !!camera?.outputRenderTarget && (camera === this.helper.camera || camera.rigParent === this.helper.camera);
   }
 
+  private updateRenderPath(): void {
+    const wrapper = this.helper?.sessionManager._getBaseLayerWrapper();
+    this.report.renderPath = wrapper?.layerType === 'XRProjectionLayer' ? 'projection' :
+      wrapper?.layerType === 'XRWebGLLayer' ? 'legacy' : 'uninitialized';
+    const layer = wrapper?.layer;
+    this.report.ignoreDepthValues = layer && 'ignoreDepthValues' in layer && typeof layer.ignoreDepthValues === 'boolean' ? layer.ignoreDepthValues : null;
+  }
+
   private afterEyeDraw(): void {
     if (!this.isEyeDraw()) return;
     const now = performance.now();
     const calls = Math.max(0, (this.instrumentation?.drawCallsCounter.current ?? 0) - this.drawBaseline);
     this.report.eyeDrawPasses += 1; this.report.drawCalls += calls;
-    const layer = this.target?.xrLayer;
-    if (layer) {
-      this.report.framebufferWidth = layer.framebufferWidth; this.report.framebufferHeight = layer.framebufferHeight;
-      this.report.ignoreDepthValues = layer.ignoreDepthValues;
+    this.updateRenderPath();
+    const wrapper = this.scene.activeCamera?.outputRenderTarget?.renderTarget;
+    if (wrapper) {
+      this.report.framebufferWidth = wrapper.width; this.report.framebufferHeight = wrapper.height;
     }
     if (this.gl && (this.report.nativeFrames <= 3 || now - this.lastSampleAt >= 1000)) {
       this.sampleFrame = this.report.nativeFrames; this.lastSampleAt = now;
     }
     if (this.gl && this.sampleFrame === this.report.nativeFrames) {
       const bound: unknown = this.gl.getParameter(this.gl.FRAMEBUFFER_BINDING);
-      this.report.targetMatches = layer ? bound === layer.framebuffer : null;
-      this.report.opaqueFramebuffer = layer ? layer.framebuffer !== null : null;
+      this.report.targetMatches = wrapper instanceof WebGLRenderTargetWrapper ?
+        bound === (wrapper._MSAAFramebuffer ?? wrapper._framebuffer) : null;
+      this.report.opaqueFramebuffer = this.report.renderPath === 'legacy' ? bound !== null :
+        this.report.renderPath === 'projection' ? false : null;
       // This callback runs inside the session's XR RAF with its framebuffer
       // bound. Opaque attachments are never inspected, changed or read back.
       this.report.framebufferStatus = this.gl.checkFramebufferStatus(this.gl.FRAMEBUFFER);

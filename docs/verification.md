@@ -1,6 +1,6 @@
 # Release verification
 
-The v0.7 build was checked locally with the tests below. Measurements describe this computer and local connections. Load and detailed damage-transport measurements are retained from v0.5; the explosion presentation check is retained from v0.6.
+The v0.7.1 build was checked locally with the tests below. Measurements describe this computer and local connections. Load and detailed damage-transport measurements are retained from v0.5; the explosion presentation check is retained from v0.6.
 
 The current Pages build uses `/bb/`. The earlier release measurements below used the previous `/battlebots-arena/` path.
 
@@ -9,7 +9,7 @@ The current Pages build uses `/bb/`. The earlier release measurements below used
 | Check | Result |
 | --- | --- |
 | TypeScript and production client/server builds | Passed |
-| Simulation, impacts, flight, damage, hazards, prediction, steering, static practice, VR input and authentication | 67 tests passed |
+| Simulation, impacts, flight, damage, hazards, prediction, steering, static practice, VR input and authentication | 69 tests passed |
 | Static practice | The real Rapier simulation completed countdown, combat, explosion and rematch in a browser Worker without login or a game server |
 | Worker clock | Timer and input wakes share a bounded accumulator; real tests verify no double-speed simulation and reject malformed worker commands |
 | VR input | Drift dead zone, both-hand action edges, single-controller fallback, HUD trigger conflict, pause baseline and non-XR cleanup passed |
@@ -37,6 +37,18 @@ Airborne fixtures verify gravity, angular motion and the absence of drive, braki
 The load test measured 0.945 ms average simulation work per update, a 183 ms maximum snapshot gap, and 103.4 MiB process RSS. It uses neutral driving with active spinners and does not represent maximum debris activity. Other local verification processes were running during this sample. The free Render blueprint remains limited to two rooms; cloud capacity must be measured separately.
 
 ## Browser checks
+
+### VR entry regression
+
+An immersive reproduction used Meta's [IWER runtime](https://meta-quest.github.io/immersive-web-emulation-runtime/getting-started.html) with the exact production JavaScript, without importing a separate Babylon instance. A real WebGL framebuffer with color and depth attachments exercised both eye viewports. Its completeness check passed and WebGL reported no error.
+
+The old camera code failed to place the rendered eyes at the driver station. With a synthetic tracking origin eight meters away on both horizontal axes and an initial 180-degree heading, the rendered eye remained near `(26.14, 5.25, -26.25)` feet, outside the BattleBox with an almost empty view. The fixed parent tracking origin placed it near `(-3.90, 5.30, -29.01)`, including stereo eye separation. The arena and control tablet were visible in both eyes. A quarter-meter head movement moved the view naturally, and recenter restored the station.
+
+The same production test withheld viewer poses for four seconds. The session stayed paused, then anchored correctly when the first valid pose arrived at approximately 4,007 ms. Controller A started the match, and pause/resume retained the correct view. A deliberately injected draw failure ended the immersive session and displayed its reason in the browser. These checks verify the emulated render and lifecycle paths; the Quest 3 still needs a physical retest.
+
+Actual Babylon camera and controller-manager regressions cover the shared parent origin, unchanged native tracking poses, stereo separation, head movement and offline generic-trigger profile binding. The reproduction fixture and screenshots are local development artifacts in `.local`.
+
+### Desktop and mobile rendering
 
 The static build was served under `/battlebots-arena/` to exercise the same base path as GitHub Pages. Browser practice ran without a session API or WebSocket server. Live combat showed damage, airborne motion and the new VR setup control; one 844 × 390 sample reported 59 fps with no horizontal overflow. Starting practice, knockout, rematch and leaving were exercised through the interface. No browser errors were recorded.
 

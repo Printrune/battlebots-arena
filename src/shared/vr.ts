@@ -8,4 +8,5 @@ export interface VRCallbacks {
   onStatus(status: VRStatus): void;
   onDrive(throttle: number, steer: number): void;
   onAction(action: VRAction): void;
+  onError?(message: string): void;
 }

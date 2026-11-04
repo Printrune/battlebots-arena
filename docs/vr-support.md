@@ -21,6 +21,8 @@ Newer hardware can use the same route when it exposes the required WebXR session
 
 The player stays at a fixed driver station beside the BattleBox. Head movement changes the view naturally. Bot launches, recoil and defeat camera movement must not move the VR viewer. The arena remains in feet; WebXR tracking uses meters, converted at approximately 3.28084 feet per meter.
 
+Version 0.7.1 anchors a parent tracking origin, leaving the native headset and eye poses untouched. It waits for a valid viewer pose before placing the station. This corrects an immersive-camera bug that could leave the viewer outside the arena. Controller input uses an offline generic trigger profile with standard gamepad axes and face buttons. A fatal XR rendering error ends the session and shows its reason in the browser.
+
 Supported controller thumbsticks drive and steer. Weapon, recovery and pulverizer actions use mapped controller buttons. Labels differ between controller profiles, so the in-world panel also exposes actions and directional driving controls for ray, hand or gaze input. The panel includes ready, rematch, leave, recenter and exit controls. The normal HTML interface cannot be assumed visible inside an immersive session.
 
 Controls must return to neutral when the XR session loses focus, a driving input is released, a controller disconnects or VR exits. Network driving updates must follow XR frames while immersive content is active. A desktop animation loop or a hidden-page timer is insufficient for that task.

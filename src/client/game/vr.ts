@@ -1,7 +1,8 @@
-import { Quaternion } from '@babylonjs/core/Maths/math.vector';
+import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { WebXRExperienceHelper } from '@babylonjs/core/XR/webXRExperienceHelper';
 import { WebXRInput } from '@babylonjs/core/XR/webXRInput';
-import { WebXRState } from '@babylonjs/core/XR/webXRTypes';
+import { WebXRState, WebXRTrackingState } from '@babylonjs/core/XR/webXRTypes';
 import { WebXRControllerPointerSelection } from '@babylonjs/core/XR/features/WebXRControllerPointerSelection';
 import '@babylonjs/core/XR/motionController/webXRMotionControllerManager';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
@@ -15,7 +16,22 @@ import { readVRInput } from './vr-input';
 import type { VRControllerSample } from './vr-input';
 
 export const VR_FEET_PER_METER = 3.28084;
+export const VR_CONTROLLER_PROFILE = 'generic-trigger';
 const EYE_HEIGHT = 5.3;
+
+/** Place the tracking origin, leaving native headset/eye poses untouched. */
+export function alignVRStation(camera: WebXRCamera, origin: TransformNode, slot: number): void {
+  const x = slot === 0 ? -4 : 4;
+  const z = slot === 0 ? -29 : 29;
+  const heading = Math.atan2(-x, -z);
+  origin.rotationQuaternion ??= Quaternion.Identity();
+  Quaternion.RotationYawPitchRollToRef(heading - camera.rotationQuaternion.toEulerAngles().y, 0, 0, origin.rotationQuaternion);
+  const headOffset = Vector3.Zero();
+  camera.position.rotateByQuaternionToRef(origin.rotationQuaternion, headOffset);
+  origin.position.set(x - headOffset.x, EYE_HEIGHT - headOffset.y, z - headOffset.z);
+  origin.computeWorldMatrix(true);
+  camera.getViewMatrix(true);
+}
 
 export interface VRRig {
   readonly active: boolean;
@@ -43,10 +59,17 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
   let stationSlot = 0;
   let disposed = false;
   let entering = false;
+  let recoveringFromFailure = false;
   let baseline = true;
+  let awaitingTrackedAnchor = true;
   let held = new Set<string>();
   let removeVisibilityListener: (() => void) | null = null;
+  let removeFailureListeners: (() => void) | null = null;
   let status: VRStatus = { kind: 'checking' };
+  const origin = new TransformNode('vr-tracking-origin', scene);
+  const contextLost = scene.getEngine().onContextLostObservable.add(() => {
+    void recover(new Error('The graphics context was lost while rendering VR.'));
+  });
 
   function report(next: VRStatus): void {
     status = next;
@@ -60,26 +83,71 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
   }
 
   function active(): boolean { return helper?.sessionManager.inXRSession ?? false; }
+  function hasPose(): boolean { return !!helper && helper.camera.trackingState !== WebXRTrackingState.NOT_TRACKING; }
   function focused(): boolean {
-    return active() && helper?.state === WebXRState.IN_XR && helper.sessionManager.session.visibilityState === 'visible';
+    return active() && hasPose() && helper?.state === WebXRState.IN_XR && helper.sessionManager.session.visibilityState === 'visible';
   }
 
-  function placeAtStation(camera: WebXRCamera, height: number): void {
-    // Stand between cage posts and face the center from either team's side.
-    const x = stationSlot === 0 ? -4 : 4;
-    const z = stationSlot === 0 ? -29 : 29;
-    camera.position.set(x, height, z);
-    camera.rotationQuaternion.copyFrom(Quaternion.RotationYawPitchRoll(Math.atan2(-x, -z), 0, 0));
+  function errorMessage(cause: unknown): string {
+    return cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : 'An unexpected error stopped VR rendering.';
+  }
+
+  async function endSession(): Promise<void> {
+    if (!helper || !active()) return;
+    try {
+      await helper.exitXRAsync();
+    } finally {
+      // The helper can still be entering when its first camera/framebuffer update
+      // throws. End that created session even if the helper did not reach IN_XR.
+      if (active()) await helper.sessionManager.exitXRAsync();
+    }
+  }
+
+  async function recover(cause: unknown): Promise<void> {
+    if (disposed || recoveringFromFailure || !active() && !entering) return;
+    recoveringFromFailure = true;
+    const message = errorMessage(cause);
+    console.error({ event: 'vr_render_failed', message });
+    try {
+      neutral();
+    } catch (resetFailure: unknown) {
+      console.error({ event: 'vr_input_reset_failed', message: errorMessage(resetFailure) });
+    }
+    try {
+      await endSession();
+    } catch (exitFailure: unknown) {
+      console.error({ event: 'vr_exit_failed', message: errorMessage(exitFailure) });
+    } finally {
+      entering = false;
+      removeFailureListeners?.(); removeFailureListeners = null;
+      if (!active()) { scene.activeCamera = desktopCamera; report({ kind: 'available' }); }
+      else report({ kind: 'paused' });
+      recoveringFromFailure = false;
+      if (!disposed) callbacks.onError?.(`VR stopped because of a rendering error: ${message}`);
+    }
+  }
+
+  function watchForFailures(): void {
+    if (typeof window === 'undefined' || removeFailureListeners) return;
+    const onError = (event: ErrorEvent) => {
+      // Resource load events have no JS ErrorEvent payload and must not end VR.
+      if (event instanceof ErrorEvent && event.message) void recover(event.error ?? event.message);
+    };
+    const onRejection = (event: PromiseRejectionEvent) => { void recover(event.reason); };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    removeFailureListeners = () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
   }
 
   function recenter(): void {
     if (!helper || !active()) return;
     neutral();
-    // Babylon converts changes to this tracked pose into a reference-space offset
-    // on its next XR frame. Set the desired eye pose directly, without resetting
-    // its first-frame height compensation or overriding subsequent head tracking.
-    placeAtStation(helper.camera, EYE_HEIGHT);
-    helper.camera.getViewMatrix(true);
+    if (!hasPose()) { awaitingTrackedAnchor = true; return; }
+    alignVRStation(helper.camera, origin, stationSlot);
+    awaitingTrackedAnchor = false;
   }
 
   function sample(controller: WebXRInputSource): VRControllerSample {
@@ -128,9 +196,11 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       const experience = await WebXRExperienceHelper.CreateAsync(scene);
       if (disposed) { experience.dispose(); return; }
       helper = experience;
+      helper.camera.parent = origin;
       helper.sessionManager.worldScalingFactor = VR_FEET_PER_METER;
       helper.camera.minZ = 0.12; helper.camera.maxZ = 200;
       input = new WebXRInput(helper.sessionManager, helper.camera, {
+        forceInputProfile: VR_CONTROLLER_PROFILE,
         doNotLoadControllerMeshes: true,
         disableControllerAnimation: true,
         disableOnlineControllerRepository: true,
@@ -156,7 +226,22 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         canvasOptions: { framebufferScaleFactor: 0.85, antialias: true, alpha: false, depth: true, stencil: false },
       });
       helper.onInitialXRPoseSetObservable.add((camera) => {
-        placeAtStation(camera, 0);
+        // The helper copies the desktop camera before the first tracked frame.
+        // Keep tracking local; the parent is positioned once that pose exists.
+        camera.position.setAll(0);
+        camera.rotationQuaternion.set(0, 0, 0, 1);
+        awaitingTrackedAnchor = true;
+      });
+      helper.sessionManager.onXRFrameObservable.add(() => {
+        if (!helper || helper.state !== WebXRState.IN_XR || disposed) return;
+        // An immersive session can start before tracking yields a viewer pose.
+        // Anchor only once that pose exists, then keep ordinary tracking local.
+        if (awaitingTrackedAnchor && hasPose()) recenter();
+        const kind = focused() ? 'active' : 'paused';
+        if (status.kind !== kind) {
+          if (kind === 'paused') neutral();
+          report({ kind });
+        }
       });
       helper.onStateChangedObservable.add((state) => {
         if (disposed) return;
@@ -168,6 +253,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         } else if (state === WebXRState.NOT_IN_XR) {
           neutral(); entering = false;
           removeVisibilityListener?.(); removeVisibilityListener = null;
+          removeFailureListeners?.(); removeFailureListeners = null;
           scene.activeCamera = desktopCamera;
           report({ kind: 'available' });
         } else {
@@ -177,7 +263,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       helper.sessionManager.onXRSessionInit.add((session) => {
         const visibility = () => {
           neutral();
-          report({ kind: helper?.state !== WebXRState.IN_XR ? 'entering' : session.visibilityState === 'visible' ? 'active' : 'paused' });
+          report({ kind: helper?.state !== WebXRState.IN_XR ? 'entering' : focused() ? 'active' : 'paused' });
         };
         removeVisibilityListener?.();
         // Babylon may omit its pointer-up when a ray leaves all pickable meshes.
@@ -196,6 +282,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       input?.dispose(); input = null;
       renderTarget?.dispose(); renderTarget = null;
       helper?.featuresManager.dispose(); helper?.dispose(); helper = null; selection = null;
+      origin.dispose();
       report({ kind: 'unavailable', reason: cause instanceof Error ? cause.message : 'The VR session could not initialize in this browser.' });
     }
   }
@@ -210,17 +297,26 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       if (disposed || active() || entering) return;
       if (!helper || !renderTarget) throw new Error(status.kind === 'unavailable' ? status.reason : 'VR is not ready yet.');
       entering = true;
+      watchForFailures();
       try {
         await helper.enterXRAsync('immersive-vr', 'local-floor', renderTarget, { optionalFeatures: ['local-floor', 'hand-tracking'] });
       } catch (cause: unknown) {
-        entering = false; neutral();
-        report({ kind: 'available' });
+        try {
+          await endSession();
+        } catch (exitFailure: unknown) {
+          console.error({ event: 'vr_exit_failed', message: errorMessage(exitFailure) });
+        } finally {
+          entering = false; neutral();
+          removeFailureListeners?.(); removeFailureListeners = null;
+          if (!active()) { scene.activeCamera = desktopCamera; report({ kind: 'available' }); }
+          else report({ kind: 'paused' });
+        }
         throw cause instanceof Error ? cause : new Error('VR entry was cancelled or unavailable.');
       }
     },
     async exit() {
       neutral();
-      if (helper && active()) await helper.exitXRAsync();
+      await endSession();
     },
     recenter,
     pulse(_dt) {
@@ -247,10 +343,13 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       if (disposed) return;
       neutral(); disposed = true;
       removeVisibilityListener?.(); removeVisibilityListener = null;
+      removeFailureListeners?.(); removeFailureListeners = null;
+      scene.getEngine().onContextLostObservable.remove(contextLost);
       if (helper && active()) void helper.exitXRAsync().catch(() => undefined);
       input?.dispose(); input = null;
       renderTarget?.dispose(); renderTarget = null;
       helper?.featuresManager.dispose(); helper?.dispose(); helper = null; selection = null;
+      origin.dispose();
     },
   };
 }

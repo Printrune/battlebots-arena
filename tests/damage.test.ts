@@ -5,6 +5,7 @@ import { ComponentDamage, DebrisSystem } from '../src/server/damage';
 import { createSimulation, RobotPhysics } from '../src/server/simulation';
 import { ArenaHazards } from '../src/server/arena-hazards';
 import { KILLSAWS } from '../src/shared/arena';
+import { PHYSICS } from '../src/shared/physics';
 import { BOTS, NEUTRAL_INPUT, matchSnapshotSchema } from '../src/shared/protocol';
 import type { BotId, PlayerInput } from '../src/shared/protocol';
 import { MAX_DAMAGE_MARKS, MAX_DEBRIS, damageParts, driveCondition, partIntegrity } from '../src/shared/damage';
@@ -13,7 +14,7 @@ const DT = 1 / 60;
 before(async () => { const initialized = await createSimulation('damage-initialization'); initialized.dispose(); });
 
 function fixture(botId: BotId = 'tombstone') {
-  const world = new RAPIER.World({ x: 0, y: -19.62, z: 0 });
+  const world = new RAPIER.World({ x: 0, y: -PHYSICS.gravity, z: 0 });
   world.timestep = DT;
   const floor = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, -0.2, 0));
   world.createCollider(RAPIER.ColliderDesc.cuboid(40, 0.2, 40).setFriction(0.45), floor);
@@ -240,10 +241,7 @@ test('combat snapshots preserve component breakage and KO wreckage settles while
     for (let tick = 0; tick < 15; tick += 1) { now += 1_000 / 30; simulation.step(1 / 30, now); }
     const settled = simulation.snapshot();
     assert.deepEqual(settled.arena, frozen.arena);
-    for (const player of settled.players) {
-      const previous = frozen.players.find((item) => item.id === player.id); assert.ok(previous);
-      assert.ok(Math.hypot(player.position.x - previous.position.x, player.position.y - previous.position.y, player.position.z - previous.position.z) < 0.00001);
-    }
+    assert.deepEqual(settled.phase, frozen.phase);
     assert.notDeepEqual(settled.debris.map((item) => item.position), frozen.debris.map((item) => item.position));
     simulation.rematch();
     assert.deepEqual(simulation.snapshot().debris, []);

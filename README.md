@@ -29,6 +29,8 @@ Hits damage individual wheels, armor panels and the weapon assembly at the conta
 
 Watch the wheel indicators and weapon status beside the hull display. A damaged weapon spins up more slowly, and a destroyed motor cannot restart its rotor. Stored spinner inertia still coasts down. Rematches repair every component and remove debris. Damage and detached parts are server-owned and survive reconnecting. Durability and handling penalties are tuned for play rather than measured failure loads.
 
+Hull life is shown as current/100 in the top HUD and above each bot. Bars turn amber and red as life falls, with a short trailing strip showing recent damage. Witch Doctor's vertical weapon can launch and pitch opponents; Tombstone's horizontal bar cuts sideways and recoils. Off-center hits create rotation. Airborne bots follow gravity and cannot accelerate by steering in empty space. Hard floor landings can cause further localized damage; normal rolling and small floor bumps do not.
+
 The BattleBox reconstructs the WCVII-era enclosure, worn steel floor, clear protective panels, corner pulverizers and Upper Deck. The screws operate throughout combat and reverse when a robot jams them. Each team operates two corner hammers. Killsaws stay retracted for the first two minutes, then warn before rising beneath nearby robots in the final minute. Arena damage and lifting impulses run on the server. Hazard hits are tracked separately from weapon-hit counts.
 
 Select **Inspect BattleBox** in the garage for a full-arena view. Drag to orbit and scroll to zoom. [Arena sources](docs/arena-references.md) distinguish verified dimensions and operation from approximate hazard positions and force values.
@@ -40,6 +42,7 @@ pnpm typecheck
 pnpm test
 pnpm verify:models
 pnpm verify:damage-models
+pnpm verify:life-bars
 pnpm verify:arena
 pnpm build
 ```
@@ -82,5 +85,7 @@ Match state is temporary and resets when the server restarts. Guests can reconne
 The game has no age gate or date-of-birth collection. Accounts, payments, public matchmaking, spectators, team battles, and real-show activities are future work.
 
 The client uses React and Babylon.js. Colyseus owns rooms, authentication checks, and transport. A separate Rapier simulation owns combat. Shared Zod schemas validate network input and snapshots.
+
+Rapier advances at 60 Hz under the 30 Hz room update. The simulation uses feet, kilograms and seconds consistently. Rotor inertia/energy, actual contact-point velocity and effective rigid-body mass determine hit impulses, reciprocal recoil and damage. Continuous collision detection, actual support contacts and hard-landing checks share the same world. [Impact and flight design](docs/impact-design.md) records the approximations and primary engine references.
 
 See [release verification](docs/verification.md) for measured results and remaining device checks.

@@ -190,14 +190,22 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
 .fighter-hud--local { text-align: left; }
 .fighter-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .fighter-meta > span { font-family: 'Barlow Condensed', Impact, sans-serif; font-size: 29px; font-weight: 700; text-transform: uppercase; text-shadow: 0 2px 8px #000c; white-space: nowrap; }
-.fighter-meta strong { font-size: 15px; font-weight: 600; text-shadow: 0 2px 8px #000c; white-space: nowrap; }
-.fighter-meta strong small { color: #9eaaa4; font-size: 8px; letter-spacing: 1px; }
-.health-track { height: 7px; background: #101715d9; border: 1px solid #a2b3a448; margin-top: 8px; overflow: hidden; }
-.health-track > div { height: 100%; background: var(--amber); transition: width .2s; }
-.fighter-hud:not(.fighter-hud--local) .health-track > div { margin-left: auto; }
+.fighter-meta strong { font-size: 18px; font-weight: 700; text-shadow: 0 2px 8px #000c; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fighter-meta strong small { color: #bec9bd; font-size: 10px; letter-spacing: .3px; font-weight: 500; }
+.health-track { position: relative; height: 19px; background: #0a100de8; border: 1px solid #b4c4ab80; margin-top: 8px; overflow: hidden; box-shadow: 0 2px 9px #0004, inset 0 1px 3px #0008; }
+.health-track > div { position: absolute; top: 0; bottom: 0; left: 0; }
+.health-current { z-index: 1; background: #93ce65; transition: width .12s ease-out, background-color .15s ease; box-shadow: inset 0 1px #ffffff30; }
+.health-recent { background: #edcea4; transition: width .55s ease-out .45s; }
+.health-track--warning .health-current { background: #eeb74e; }
+.health-track--critical { border-color: #e49a7a99; }
+.health-track--critical .health-current { background: #e97860; }
+.fighter-hud:not(.fighter-hud--local) .health-track > div { left: auto; right: 0; }
+.life-bar-label { position: absolute; z-index: 2; top: 2px; bottom: 2px; left: 4px; display: inline-flex; align-items: center; padding: 0 4px; background: #10170ce0; color: #e9f0e1; font-size: 8px; font-weight: 800; letter-spacing: .6px; line-height: 1; }
+.fighter-hud:not(.fighter-hud--local) .life-bar-label { left: auto; right: 4px; }
 .fighter-caption { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 8px; letter-spacing: 1px; color: #b4c1b4; padding-top: 8px; text-shadow: 0 2px 6px #000; }
 .fighter-hud:not(.fighter-hud--local) .fighter-meta, .fighter-hud:not(.fighter-hud--local) .fighter-caption { flex-direction: row-reverse; }
 .fighter-hud--critical .fighter-meta strong { color: #f3ad84; }
+.fighter-hud--warning .fighter-meta strong { color: #efc16e; }
 .component-condition { display: flex; align-items: center; gap: 7px; margin-top: 7px; min-height: 15px; }
 .fighter-hud:not(.fighter-hud--local) .component-condition { flex-direction: row-reverse; }
 .wheel-group-label { color: #899c83; font-size: 6px; font-weight: 600; letter-spacing: 1px; }
@@ -398,8 +406,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .footer-version { margin-left: 3px; }
   .match-header { top: 15px; left: 20px; right: 20px; gap: 18px; }
   .fighter-meta > span { font-size: 23px; }
-  .fighter-meta strong { font-size: 12px; }
-  .fighter-meta strong small { font-size: 6px; }
+  .fighter-meta strong { font-size: 16px; }
+  .fighter-meta strong small { font-size: 8px; }
+  .health-track { height: 17px; }
+  .life-bar-label { font-size: 7px; letter-spacing: .4px; }
   .fighter-caption { font-size: 6px; letter-spacing: .5px; }
   .fighter-caption span:last-child { display: none; }
   .component-condition { gap: 5px; margin-top: 6px; }
@@ -503,7 +513,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .fighter-hud { padding-top: 7px; }
   .fighter-meta { display: block; }
   .fighter-meta > span { display: block; font-size: 21px; }
-  .fighter-meta > strong { display: block; font-size: 11px; margin-top: 3px; }
+  .fighter-meta > strong { display: block; font-size: 15px; margin-top: 3px; }
+  .health-track { height: 18px; margin-top: 6px; }
   .fighter-caption { font-size: 6px; margin-top: 1px; line-height: 1.5; }
   .wheel-group-label { display: none; }
   .component-condition { margin-top: 6px; }
@@ -511,8 +522,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .match-clock { width: 79px; padding: 8px 5px; }
   .match-clock strong { font-size: 31px; }
   .match-clock > span:first-child { font-size: 5px; letter-spacing: .3px; }
-  .match-utility { top: max(130px, calc(env(safe-area-inset-top) + 115px)); right: 13px; }
-  .arena-hazards { top: max(130px, calc(env(safe-area-inset-top) + 115px)); left: 13px; transform: none; gap: 8px; padding: 8px; font-size: 7px; letter-spacing: .4px; }
+  .match-utility { top: max(148px, calc(env(safe-area-inset-top) + 133px)); right: 13px; }
+  .arena-hazards { top: max(148px, calc(env(safe-area-inset-top) + 133px)); left: 13px; transform: none; gap: 8px; padding: 8px; font-size: 7px; letter-spacing: .4px; }
   .hazard-screws { padding-left: 8px; }
   .match-utility .icon-button { width: 30px; height: 30px; }
   .match-overlay { padding: 160px 16px 160px; }
@@ -540,7 +551,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .drive-control > span { font-size: 6px; }
   .rotate-hint { position: absolute; bottom: 155px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; width: max-content; max-width: calc(100% - 30px); color: #d1ddc5; background: #182014c2; padding: 8px 12px; border: 1px solid #b0c39b2b; font-size: 8px; z-index: 5; pointer-events: none; }
   .rotate-hint svg { width: 18px; }
-  .connection-notice { top: 157px; padding: 12px; gap: 10px; width: calc(100% - 30px); }
+  .connection-notice { top: 190px; padding: 12px; gap: 10px; width: calc(100% - 30px); }
   .connection-notice strong { font-size: 10px; }
   .connection-notice span { font-size: 8px; }
   .countout-notice { top: 27%; gap: 10px; padding: 9px 12px; }
@@ -556,11 +567,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; backgr
   .match-header { top: max(10px, env(safe-area-inset-top)); left: max(22px, env(safe-area-inset-left)); right: max(22px, env(safe-area-inset-right)); gap: 24px; }
   .fighter-hud { max-width: 230px; padding-top: 1px; }
   .fighter-meta > span { font-size: 22px; }
-  .fighter-meta strong { font-size: 12px; }
+  .fighter-meta strong { font-size: 16px; }
   .fighter-caption { font-size: 6px; padding-top: 4px; }
   .component-condition { margin-top: 5px; min-height: 13px; }
   .wheel-chip { height: 13px; width: 20px; }
-  .health-track { height: 5px; margin-top: 4px; }
+  .health-track { height: 16px; margin-top: 4px; }
   .match-clock { width: 87px; padding: 4px; }
   .match-clock strong { font-size: 30px; }
   .match-clock > span:first-child { font-size: 5px; }

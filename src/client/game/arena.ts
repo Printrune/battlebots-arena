@@ -19,6 +19,9 @@ import { ArenaSound } from './sound';
 import { createArenaEnvironment } from './lighting';
 import { damagedDriveTuning } from '../../shared/damage';
 import { DebrisRenderer } from './debris';
+import { PHYSICS } from '../../shared/physics';
+import { followHeading, predictMotionToRef } from './motion';
+import { createLifeBars } from './life-bars';
 
 interface DisplayBot {
   model: BotModel;
@@ -26,6 +29,8 @@ interface DisplayBot {
   weaponBlur: Mesh;
   displayedHealth: number;
   damageRevision: number;
+  cameraYaw: number | null;
+  bounds: Vector3[];
 }
 
 interface Spark {
@@ -81,6 +86,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   const stage = makeStage(scene);
   const sound = new ArenaSound();
   const bots = new Map<string, DisplayBot>();
+  const lifeBars = createLifeBars(scene, camera);
   const debris = new DebrisRenderer(scene, (id) => bots.get(id)?.model);
   const previewId = 'preview-selected';
   const rivalId = 'preview-rival';
@@ -109,6 +115,8 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   const headingCorrection = Quaternion.Identity();
   const authoritativeQuaternion = Quaternion.Identity();
   const previewQuaternion = Quaternion.Identity();
+  const lifePosition = Vector3.Zero();
+  const transformedCorner = Vector3.Zero();
   const identity = Matrix.Identity();
 
   const sparkMaterial = material(scene, 'impact-spark', '#ffcf68');
@@ -150,7 +158,19 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     weaponBlur.material = blurMaterial;
     weaponBlur.isPickable = false;
     weaponBlur.visibility = 0;
-    const display = { model, state: null, weaponBlur, displayedHealth: 100, damageRevision: -1 };
+    const minimum = new Vector3(Infinity, Infinity, Infinity);
+    const maximum = new Vector3(-Infinity, -Infinity, -Infinity);
+    for (const mesh of model.meshes) {
+      if (!mesh.isVisible || !mesh.isEnabled()) continue;
+      mesh.computeWorldMatrix(true);
+      const box = mesh.getBoundingInfo().boundingBox;
+      minimum.minimizeInPlace(box.minimumWorld); maximum.maximizeInPlace(box.maximumWorld);
+    }
+    const bounds: Vector3[] = [];
+    for (const x of [minimum.x, maximum.x]) for (const y of [minimum.y, maximum.y]) for (const z of [minimum.z, maximum.z]) {
+      bounds.push(new Vector3(x - model.root.position.x, y - model.root.position.y, z - model.root.position.z));
+    }
+    const display = { model, state: null, weaponBlur, displayedHealth: 100, damageRevision: -1, cameraYaw: null, bounds };
     bots.set(id, display);
     return display;
   }
@@ -158,6 +178,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
   function removeBot(id: string): void {
     const bot = bots.get(id);
     if (!bot) return;
+    lifeBars.remove(id);
     debris.removeOwner(id);
     for (const mesh of bot.model.meshes) shadows.removeShadowCaster(mesh);
     bot.weaponBlur.dispose(false, true);
@@ -246,7 +267,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     const dt = Math.min(frameSeconds, 0.05);
     time += dt;
     const blend = 1 - Math.exp(-dt * 14);
-    const elapsed = Math.min((performance.now() - lastUpdateAt) / 1000, 0.12);
+    const elapsed = Math.min((performance.now() - lastUpdateAt) / 1000, PHYSICS.maxPredictionSeconds);
     stage.pulse(time);
 
     if (snapshot) {
@@ -254,22 +275,21 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         const player = bot.state;
         if (!player) continue;
         const isLocal = id === localId;
-        targetPosition.set(player.position.x, player.position.y, player.position.z);
+        const advancing = snapshot.phase.kind === 'fighting' || snapshot.phase.kind === 'finished';
+        predictMotionToRef(player, elapsed, advancing, targetPosition, authoritativeQuaternion);
         const definition = BOTS[player.botId];
         const rotation = player.rotation;
         const up = 1 - 2 * (rotation.x * rotation.x + rotation.z * rotation.z);
         let predictedYaw = 0;
         if (snapshot.phase.kind === 'fighting') {
-          targetPosition.x += player.velocity.x * elapsed;
-          targetPosition.z += player.velocity.z * elapsed;
-          if (isLocal && Math.abs(up) > 0.7 && player.position.y < definition.physics.wheelRadius + 0.35 && !player.recovering) {
+          if (isLocal && player.grounded && Math.abs(up) > 0.7 && !player.recovering) {
             const grip = player.inverted && player.botId === 'witchdoctor' ? 0.35 : 1;
             const driveTuning = damagedDriveTuning(player.botId, player.damage);
             const desiredYawRate = (input.steer * definition.turnSpeed * driveTuning.turnScale + input.throttle * driveTuning.yawPull) * grip;
             const yawChange = Math.max(-definition.physics.angularAcceleration * elapsed,
               Math.min(definition.physics.angularAcceleration * elapsed, desiredYawRate - player.angularVelocity.y));
-            predictedYaw = (player.angularVelocity.y + yawChange * 0.5) * elapsed;
-            const prediction = driveVelocity(player.yaw + predictedYaw, input.throttle, definition.speed * grip * driveTuning.speedScale);
+            predictedYaw = yawChange * 0.5 * elapsed;
+            const prediction = driveVelocity(player.yaw + player.angularVelocity.y * elapsed + predictedYaw, input.throttle, definition.speed * grip * driveTuning.speedScale);
             const blendAcceleration = 1 - Math.exp(-definition.physics.acceleration * elapsed / definition.speed);
             targetPosition.x += (prediction.x - player.velocity.x) * blendAcceleration * elapsed * 0.5;
             targetPosition.z += (prediction.z - player.velocity.z) * blendAcceleration * elapsed * 0.5;
@@ -277,12 +297,12 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         }
         targetPosition.x = Math.max(-ARENA.halfWidth + 0.9, Math.min(ARENA.halfWidth - 0.9, targetPosition.x));
         targetPosition.z = Math.max(-ARENA.halfDepth + 1.1, Math.min(ARENA.halfDepth - 1.1, targetPosition.z));
-        Vector3.LerpToRef(bot.model.root.position, targetPosition, isLocal ? Math.min(1, blend * 1.5) : blend, bot.model.root.position);
-        authoritativeQuaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+        const poseBlend = 1 - Math.exp(-dt * (player.grounded ? isLocal ? 26 : 20 : 38));
+        Vector3.LerpToRef(bot.model.root.position, targetPosition, poseBlend, bot.model.root.position);
         Quaternion.RotationYawPitchRollToRef(predictedYaw, 0, 0, headingCorrection);
         headingCorrection.multiplyToRef(authoritativeQuaternion, targetQuaternion);
         const current = bot.model.root.rotationQuaternion;
-        if (current) Quaternion.SlerpToRef(current, targetQuaternion, blend, current);
+        if (current) Quaternion.SlerpToRef(current, targetQuaternion, poseBlend, current);
         for (const wheel of bot.model.wheels) {
           wheel.rotation.x += (wheel.position.x < 0 ? player.wheelSpeedLeft : player.wheelSpeedRight) * dt;
         }
@@ -292,6 +312,14 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         bot.weaponBlur.visibility = Math.max(0, Math.min(1, (player.weaponRpm / definition.weapon.maxRpm - 0.15) * 1.15));
         if (bot.model.selfRighter) bot.model.selfRighter.rotation.x = -Math.sin(player.recoveryProgress * Math.PI) * 2.6;
         bot.model.pulseDamage(time, dt);
+        const world = bot.model.root.computeWorldMatrix(true);
+        let top = -Infinity;
+        for (const corner of bot.bounds) {
+          Vector3.TransformCoordinatesToRef(corner, world, transformedCorner);
+          top = Math.max(top, transformedCorner.y);
+        }
+        lifePosition.set(bot.model.root.position.x, top + 0.55, bot.model.root.position.z);
+        lifeBars.setPosition(id, lifePosition);
         bot.model.root.setEnabled(true);
         bot.model.glow.alpha = player.connected ? 1 : 0.25;
         if (isLocal) sound.motor(player.weaponRpm / definition.weapon.maxRpm, Math.hypot(player.velocity.x, player.velocity.z) / definition.speed, player.botId === 'tombstone');
@@ -301,17 +329,18 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       if (followed) {
         const position = followed.model.root.position;
         const player = followed.state;
-        const yaw = player?.yaw ?? 0;
+        followed.cameraYaw = player ? followHeading(followed.cameraYaw ?? player.yaw, player.yaw, player.grounded, dt) : 0;
+        const yaw = followed.cameraYaw;
         const behindX = -Math.sin(yaw) * 7.6;
         const behindZ = -Math.cos(yaw) * 7.6;
         desiredCamera.set(
           Math.max(-ARENA.halfWidth + 0.4, Math.min(ARENA.halfWidth - 0.4, position.x + behindX)),
-          Math.max(5.4, position.y + 5.3),
+          Math.max(5.4, position.y + 5.3 + (!player?.grounded ? Math.max(0, player?.velocity.y ?? 0) * .08 : 0)),
           Math.max(-ARENA.halfDepth + 0.4, Math.min(ARENA.halfDepth - 0.4, position.z + behindZ)),
         );
-        Vector3.LerpToRef(camera.position, desiredCamera, 1 - Math.exp(-dt * 4.7), camera.position);
+        Vector3.LerpToRef(camera.position, desiredCamera, 1 - Math.exp(-dt * (player?.grounded ? 7 : 12)), camera.position);
         targetPosition.set(position.x + Math.sin(yaw) * 1.7, position.y + 0.2, position.z + Math.cos(yaw) * 1.7);
-        Vector3.LerpToRef(cameraTarget, targetPosition, 1 - Math.exp(-dt * 8), cameraTarget);
+        Vector3.LerpToRef(cameraTarget, targetPosition, 1 - Math.exp(-dt * 13), cameraTarget);
         camera.setTarget(cameraTarget);
         const opponent = snapshot.players.find((item) => item.id !== localId);
         if (opponent) {
@@ -354,6 +383,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
     }
 
     debris.pulse(dt, elapsed);
+    lifeBars.pulse(dt);
     scene.render();
     fpsTime += frameSeconds;
     fpsFrames += 1;
@@ -380,12 +410,14 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         const isNew = !bots.has(player.id);
         const display = ensureBot(player.id, player.botId, player.paint);
         display.state = player;
+        lifeBars.setHealth(player.id, player.health);
         if (display.damageRevision !== player.damage.revision || display.displayedHealth !== player.health) {
           display.model.setDamage(player.damage, 1 - player.health / 100);
           display.damageRevision = player.damage.revision;
           display.displayedHealth = player.health;
         }
         if (isNew || next.phase.kind === 'lobby' || next.phase.kind === 'countdown') {
+          display.cameraYaw = player.yaw;
           display.model.root.position.set(player.position.x, player.position.y, player.position.z);
           const q = player.rotation;
           display.model.root.rotationQuaternion?.set(q.x, q.y, q.z, q.w);
@@ -397,12 +429,17 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
         lastEventId = event.id;
         if (event.kind === 'hit' || event.kind === 'hazard') burst(event.position, event.strength);
         if (event.kind === 'break') burst(event.position, Math.max(1, event.strength * 1.5));
+        if (event.kind === 'landing') {
+          if (event.sourceId === playerId) shake = Math.max(shake, Math.min(0.18, event.strength * 0.14));
+          sound.hit(event.strength * 0.5);
+        }
       }
     },
     setInput(next) { input = next; },
     setPreview(botId, paint) {
       if (disposed) return;
       snapshot = null;
+      lifeBars.clear();
       debris.clear();
       stage.setState(null);
       scene.fogDensity = overview ? 0.003 : 0.012;
@@ -436,6 +473,7 @@ export async function createArena(canvas: HTMLCanvasElement): Promise<ArenaRende
       engine.stopRenderLoop();
       sound.dispose();
       debris.clear();
+      lifeBars.dispose();
       scene.dispose();
       engine.dispose();
     },

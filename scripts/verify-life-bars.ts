@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
+import { Scene } from '@babylonjs/core/scene';
+import { FreeCamera } from '@babylonjs/core/Cameras/freeCamera';
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { createLifeBars } from '../src/client/game/life-bars';
+
+const engine = new NullEngine({ renderWidth: 960, renderHeight: 540, textureSize: 512, deterministicLockstep: false, lockstepMaxSteps: 4 });
+const scene = new Scene(engine);
+const camera = new FreeCamera('life-bars-proof-camera', new Vector3(0, 8, -12), scene);
+camera.setTarget(Vector3.Zero()); camera.getViewMatrix(true);
+const bars = createLifeBars(scene, camera);
+try {
+  assert.equal(scene.meshes.length, 8, 'Only four pooled planes per robot are allocated.');
+  bars.setHealth('one', 100); bars.setPosition('one', new Vector3(0, 3, 0));
+  bars.setHealth('two', 75); bars.setPosition('two', new Vector3(4, 3, 2));
+  bars.pulse(0.016);
+  assert.equal(bars.nodes.size, 2);
+  const first = bars.nodes.get('one'); assert.ok(first); assert.ok(first.isEnabled());
+  const fill = scene.getMeshByName('life-fill-0'); const trail = scene.getMeshByName('life-trail-0'); const label = scene.getMeshByName('life-label-0');
+  assert.ok(fill && trail && label);
+  assert.ok(first.scaling.x >= 0.6 && first.scaling.x <= 3.2, 'Screen sizing remains bounded in world space.');
+  const labelAt100 = label.metadata;
+  bars.setHealth('one', 99.8);
+  assert.equal(label.metadata, labelAt100, 'Fractional health changes must not redraw the integer label.');
+  bars.setHealth('one', 40);
+  assert.equal(fill.scaling.x, 0.4);
+  assert.ok(trail.scaling.x > fill.scaling.x);
+  bars.pulse(0.1); bars.pulse(0.2); bars.pulse(0.1);
+  assert.ok(trail.scaling.x < 1 && trail.scaling.x > 0.4, 'The delayed trail drains towards current health.');
+  bars.pulse(2);
+  assert.equal(trail.scaling.x, 0.4);
+  bars.setHealth('one', 0.2);
+  assert.equal(label.metadata.health, 1, 'A living robot must not be labeled 0 HP.');
+  bars.setHealth('one', 0); bars.pulse(0.016);
+  assert.equal(fill.isVisible, false);
+  assert.ok(first.isEnabled(), 'A knockout keeps its 0 HP label and track visible.');
+  assert.equal(label.metadata.health, 0);
+  bars.setHealth('one', 100);
+  assert.equal(fill.scaling.x, 1); assert.equal(trail.scaling.x, 1);
+  bars.remove('one'); assert.equal(first.isEnabled(), false);
+  bars.setHealth('three', 80);
+  assert.equal(bars.nodes.get('three'), first, 'Released bars are reused rather than allocated per match.');
+  assert.equal(scene.meshes.length, 8);
+  scene.render();
+  bars.clear(); assert.equal(bars.nodes.size, 0);
+  assert.ok(scene.meshes.every((mesh) => !mesh.isEnabled()));
+  process.stdout.write(`${JSON.stringify({ check: 'PASS: overhead health bars, damage trail, knockout and pooled reuse', ...bars.stats })}\n`);
+} finally {
+  bars.dispose();
+  assert.equal(scene.meshes.length, 0); assert.equal(scene.materials.length, 0);
+  scene.dispose(); engine.dispose();
+}

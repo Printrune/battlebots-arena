@@ -12,14 +12,17 @@ import { damagedDriveTuning, damageParts, driveCondition, partIntegrity, wheelPa
 import type { DamagePartId } from '../shared/damage';
 import { ComponentDamage, DebrisSystem } from './damage';
 import type { DetachedFragment } from './damage';
+import { PHYSICS } from '../shared/physics';
+import { hardLandingDamage, IMPACT_TUNING, rotorEnergy, solveWeaponImpact } from './impact-physics';
+import type { ImpactBody, ImpactSolution } from './impact-physics';
 
 type Body = InstanceType<typeof RAPIER.RigidBody>;
 type Collider = InstanceType<typeof RAPIER.Collider>;
 type Vector = PlayerSnapshot['position'];
 type Quaternion = PlayerSnapshot['rotation'];
 interface Bounds { min: Vector; max: Vector }
-type ArenaBoundary = 'floor' | 'west' | 'east' | 'north' | 'south';
-const GRAVITY = 19.62;
+type ArenaBoundary = 'floor' | 'ceiling' | 'west' | 'east' | 'north' | 'south';
+const GRAVITY = PHYSICS.gravity;
 const RECOVERY_SECONDS = 1.35;
 const IDENTITY: Quaternion = { x: 0, y: 0, z: 0, w: 1 };
 const ZERO: Vector = { x: 0, y: 0, z: 0 };
@@ -53,8 +56,9 @@ interface PendingHit {
   attacker: Participant;
   target: Participant;
   contact: WeaponContact;
-  energy: number;
-  damage: number;
+}
+interface ResolvedHit extends PendingHit {
+  solution: ImpactSolution;
 }
 
 let initialization: Promise<void> | undefined;
@@ -95,6 +99,14 @@ function uprightRotation(yaw: number): Quaternion {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
 }
 
+function impactBody(body: Body, point: Vector): ImpactBody {
+  const inertia = body.effectiveWorldInvInertia();
+  return { center: { ...body.worldCom() }, velocity: { ...body.velocityAtPoint(point) }, inverseMass: body.invMass(),
+    inverseInertia: { xx: inertia.m11, xy: inertia.m12, xz: inertia.m13, yy: inertia.m22, yz: inertia.m23, zz: inertia.m33 } };
+}
+const STATIC_IMPACT_BODY: ImpactBody = { center: ZERO, velocity: ZERO, inverseMass: 0,
+  inverseInertia: { xx: 0, xy: 0, xz: 0, yy: 0, yz: 0, zz: 0 } };
+
 /** Physical robot assembly shared by matches and real-Rapier verification fixtures. */
 export class RobotPhysics {
   readonly body: Body;
@@ -104,7 +116,13 @@ export class RobotPhysics {
   readonly damage: ComponentDamage;
   private readonly componentColliders = new Map<number, DamagePartId>();
   private readonly allColliders: Collider[] = [];
-  private readonly wheels: { id: DamagePartId; collider: Collider; position: Vector }[] = [];
+  private readonly wheels: { id: DamagePartId; collider: Collider; position: Vector; supported: boolean }[] = [];
+  private readonly physicsWorld: InstanceType<typeof RAPIER.World>;
+  private supported = false;
+  private previousVelocity: Vector = ZERO;
+  private previousAngularVelocity: Vector = ZERO;
+  private previousCom: Vector = ZERO;
+  hardContactCooldown = 0;
   private readonly armorColliders = new Map<DamagePartId, Collider[]>();
   private readonly weaponCollider: Collider;
   private readonly sweepShape: InstanceType<typeof RAPIER.Cylinder>;
@@ -131,10 +149,11 @@ export class RobotPhysics {
     yaw: number,
   ) {
     const physical = definition.physics;
+    this.physicsWorld = world;
     this.damage = new ComponentDamage(definition.id);
     this.body = world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic().setTranslation(position.x, position.y, position.z)
-        .setRotation(uprightRotation(yaw)).setLinearDamping(0.12).setAngularDamping(1.35)
+        .setRotation(uprightRotation(yaw)).setLinearDamping(0).setAngularDamping(1.35)
         .setCanSleep(false).setCcdEnabled(true),
     );
     const chassis = RAPIER.ColliderDesc.cuboid(physical.halfExtents.x, physical.halfExtents.y, physical.halfExtents.z)
@@ -155,7 +174,7 @@ export class RobotPhysics {
         this.colliders.push(collider);
         const id = wheelPartId(definition.id, offset.x, offset.z);
         this.componentColliders.set(collider.handle, id);
-        this.wheels.push({ id, collider, position: offset });
+        this.wheels.push({ id, collider, position: offset, supported: false });
       }
     }
     if (definition.weapon.kind === 'vertical-disc') {
@@ -177,7 +196,8 @@ export class RobotPhysics {
         ]);
         const rib = RAPIER.ColliderDesc.convexHull(vertices);
         if (!rib) throw new Error('Could not construct Witch Doctor rib geometry.');
-        this.colliders.push(world.createCollider(rib.setMass(physical.mass * 0.015).setFriction(0.25), this.body));
+        this.colliders.push(world.createCollider(rib.setMass(physical.mass * 0.015).setFriction(0.06)
+          .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min), this.body));
       }
     } else {
       const boom = RAPIER.ColliderDesc.convexHull(new Float32Array([
@@ -206,6 +226,10 @@ export class RobotPhysics {
     this.colliders.push(this.weaponCollider);
     this.componentColliders.set(this.weaponCollider.handle, 'weapon');
     this.allColliders.push(...this.colliders);
+    for (const collider of this.allColliders) {
+      collider.setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS);
+      collider.setContactForceEventThreshold(physical.mass * GRAVITY * 2);
+    }
     this.sweepShape = new RAPIER.Cylinder(weapon.halfWidth, weapon.radius);
     // A rotation-independent sphere includes the entire assembly, not just its
     // chassis. The support bounds use the same plow/rib/boom vertices above.
@@ -237,6 +261,41 @@ export class RobotPhysics {
   }
   get canStrike(): boolean { return this.weaponCharge >= 0.18 && this.weaponCooldown <= 0; }
   get weaponColliderHandle(): number { return this.weaponCollider.handle; }
+  get grounded(): boolean { return this.supported && Math.abs(this.body.linvel().y) < 1.5; }
+  get storedRotorEnergy(): number { return rotorEnergy(this.definition.weapon.inertiaKgFt2, this.weaponRpm * Math.PI / 30); }
+
+  refreshSupport(): void {
+    this.supported = false;
+    for (const wheel of this.wheels) wheel.supported = false;
+    const center = this.body.translation();
+    for (const collider of this.colliders) {
+      this.physicsWorld.contactPairsWith(collider, (other) => {
+        if (other.isSensor()) return;
+        this.physicsWorld.contactPair(collider, other, (manifold, flipped) => {
+          const normal = manifold.normal();
+          if ((flipped ? normal.y : -normal.y) < 0.55 || manifold.numSolverContacts() === 0) return;
+          const point = manifold.solverContactPoint(0);
+          if (!point || magnitude(subtract(point, center)) > this.boundingRadius + 0.1 || manifold.solverContactDist(0) > 0.04) return;
+          this.supported = true;
+          const wheel = this.wheels.find((item) => item.collider === collider);
+          if (wheel) wheel.supported = true;
+        });
+      });
+    }
+  }
+
+  previousVelocityAtPoint(point: Vector): Vector {
+    return add(this.previousVelocity, cross(this.previousAngularVelocity, subtract(point, this.previousCom)));
+  }
+
+  solveImpact(target: ImpactBody, contact: WeaponContact): ImpactSolution {
+    const weapon = this.definition.weapon;
+    const axis = rotate(this.body.rotation(), weapon.kind === 'vertical-disc'
+      ? { x: weapon.spinDirection, y: 0, z: 0 } : { x: 0, y: weapon.spinDirection, z: 0 });
+    return solveWeaponImpact({ attacker: impactBody(this.body, contact.point), target, point: contact.point,
+      normal: scale(contact.normal, -1), rotor: { mount: this.weaponMount, axis, radius: weapon.radius,
+        angularSpeed: this.weaponRpm * Math.PI / 30, inertiaKgFt2: weapon.inertiaKgFt2, maximumEnergyLoss: weapon.energyLossOnHit } });
+  }
 
   couldContact(other: RobotPhysics): boolean {
     const position = this.body.translation();
@@ -282,6 +341,8 @@ export class RobotPhysics {
   }
 
   step(dt: number, input: PlayerInput): boolean {
+    this.refreshSupport();
+    this.body.setAngularDamping(this.grounded ? 1.35 : 0);
     this.previousPosition = { ...this.body.translation() };
     this.previousMount = this.weaponMount;
     this.previousRotation = this.weaponRotation;
@@ -289,6 +350,7 @@ export class RobotPhysics {
     this.weaponCooldown = Math.max(0, this.weaponCooldown - dt);
     this.recoveryCooldown = Math.max(0, this.recoveryCooldown - dt);
     this.hitStun = Math.max(0, this.hitStun - dt);
+    this.hardContactCooldown = Math.max(0, this.hardContactCooldown - dt);
     const weapon = this.definition.weapon;
     const previousCharge = this.weaponCharge;
     const integrity = partIntegrity(this.damage.state, 'weapon');
@@ -306,7 +368,7 @@ export class RobotPhysics {
 
     let beganRecovery = false;
     if (input.recover && !this.recoverHeld && this.definition.physics.selfRight &&
-      this.recoveryCooldown <= 0 && this.alignment < 0.6 && this.body.translation().y < 2) {
+      this.recoveryCooldown <= 0 && this.grounded && this.alignment < 0.6 && this.body.translation().y < 2) {
       const right = rotate(this.body.rotation(), { x: 1, y: 0, z: 0 });
       const correction = cross(rotate(this.body.rotation(), { x: 0, y: 1, z: 0 }), { x: 0, y: 1, z: 0 });
       this.recoveryAxis = scale(right, dot(correction, right) < 0 ? -1 : 1);
@@ -320,12 +382,12 @@ export class RobotPhysics {
     if (this.recoveryRemaining > 0) {
       this.recoveryRemaining = Math.max(0, this.recoveryRemaining - dt);
       this.recoveryProgress = 1 - this.recoveryRemaining / RECOVERY_SECONDS;
-      if (this.alignment > 0.7 && this.recoveryProgress > 0.2) {
+      if (this.supported && this.alignment > 0.7 && this.recoveryProgress > 0.2) {
         this.recoveryRemaining = 0;
         const angular = this.body.angvel();
         this.body.setAngvel({ x: angular.x * 0.25, y: angular.y, z: angular.z * 0.25 }, true);
-      } else {
-        const torque = this.body.mass() * 22 * dt * Math.sin(Math.PI * clamp(this.recoveryProgress, 0.1, 0.9));
+      } else if (this.supported) {
+        const torque = this.body.mass() * 40 * dt * Math.sin(Math.PI * clamp(this.recoveryProgress, 0.1, 0.9));
         this.body.applyTorqueImpulse(scale(this.recoveryAxis, torque), true);
       }
     } else {
@@ -342,28 +404,25 @@ export class RobotPhysics {
     }
     const spinReaction = scale(axis, -(this.weaponCharge - previousCharge) * weapon.spinDirection * this.body.mass() * 0.10);
     this.body.applyTorqueImpulse(spinReaction, true);
+    this.previousVelocity = { ...this.body.linvel() };
+    this.previousAngularVelocity = { ...this.body.angvel() };
+    this.previousCom = { ...this.body.worldCom() };
     return beganRecovery;
   }
 
   private applyTraction(dt: number, input: PlayerInput): void {
     const physical = this.definition.physics;
-    const rotation = this.body.rotation();
     const position = this.body.translation();
     let contactTraction = 0;
     for (const wheel of this.wheels) {
       const integrity = partIntegrity(this.damage.state, wheel.id);
       if (integrity <= 0) continue;
-      const point = add(position, rotate(rotation, wheel.position));
-      const deck = ARENA.upperDeck;
-      const supportedByDeck = Math.abs(point.x - deck.x) <= deck.width / 2 &&
-        Math.abs(point.z - deck.z) <= deck.depth / 2 && point.y > deck.height;
-      const supportHeight = supportedByDeck ? deck.height : 0;
-      if (point.y >= supportHeight - 0.05 && point.y - physical.wheelRadius - supportHeight < 0.14) {
+      if (wheel.supported) {
         contactTraction += 0.62 + Math.min(1, integrity / 0.65) * 0.38;
       }
     }
     const driveOrientation = this.alignment > 0.28 || (physical.invertible && this.alignment < -0.28);
-    const fraction = driveOrientation ? contactTraction / this.wheelPositions.length : 0;
+    const fraction = driveOrientation && this.grounded ? contactTraction / this.wheelPositions.length : 0;
     const condition = driveCondition(this.definition.id, this.damage.state);
     const handling = damagedDriveTuning(this.definition.id, this.damage.state);
     const invertedFactor = this.inverted && physical.selfRight ? 0.58 : 1;
@@ -431,9 +490,9 @@ export class RobotPhysics {
     };
   }
 
-  spendWeaponEnergy(leverage: number): void {
-    const energy = this.weaponCharge * this.weaponCharge;
-    this.weaponCharge = Math.sqrt(Math.max(0, energy * (1 - this.definition.weapon.energyLossOnHit * leverage)));
+  consumeImpactEnergy(energy: number): void {
+    const maximum = rotorEnergy(this.definition.weapon.inertiaKgFt2, this.definition.weapon.maxRpm * Math.PI / 30);
+    this.weaponCharge = Math.sqrt(Math.max(0, this.storedRotorEnergy - energy) / maximum);
     this.weaponCooldown = this.definition.weaponCooldown;
   }
 
@@ -511,13 +570,11 @@ export class RobotPhysics {
 
   updateImmobilization(dt: number): boolean {
     const condition = driveCondition(this.definition.id, this.damage.state);
-    const position = this.body.translation();
+    if (condition.wheels > 0) { this.damage.immobilization(0); return false; }
+    this.refreshSupport();
     const velocity = this.body.linvel();
-    const deck = ARENA.upperDeck;
-    const support = Math.abs(position.x - deck.x) < deck.width / 2 && Math.abs(position.z - deck.z) < deck.depth / 2 ? deck.height : 0;
-    const grounded = position.y < support + this.definition.physics.wheelRadius + 0.35 && Math.abs(velocity.y) < 0.65;
     const stationary = Math.hypot(velocity.x, velocity.z) < 0.7;
-    if (condition.wheels === 0 && grounded && stationary && !this.recovering) {
+    if (condition.wheels === 0 && this.grounded && stationary && !this.recovering) {
       this.damage.immobilization(this.damage.state.immobilizedFor + dt);
     } else this.damage.immobilization(0);
     return this.damage.state.immobilizedFor >= IMMOBILIZATION_SECONDS - 0.00001;
@@ -536,6 +593,8 @@ export class RobotPhysics {
     this.body.setRotation(uprightRotation(yaw), true);
     this.body.setLinvel(ZERO, true);
     this.body.setAngvel(ZERO, true);
+    this.hardContactCooldown = 0;
+    this.supported = false;
     this.weaponCharge = 0;
     this.weaponAngle = 0;
     this.weaponCooldown = 0;
@@ -558,6 +617,7 @@ export class Simulation {
   private readonly arenaColliders: { collider: Collider; boundary: ArenaBoundary }[] = [];
   private readonly hazards: ArenaHazards;
   private readonly debris: DebrisSystem;
+  private readonly contactEvents = new RAPIER.EventQueue(true);
   private phase: MatchPhase = { kind: 'lobby' };
   private tick = 0;
   private eventId = 0;
@@ -569,7 +629,10 @@ export class Simulation {
     this.arenaColliders.push({ collider: this.world.createCollider(
       RAPIER.ColliderDesc.cuboid(ARENA.halfWidth + 1, 0.35, ARENA.halfDepth + 1).setFriction(0.45), ground,
     ), boundary: 'floor' });
-    const walls: { x: number; z: number; hx: number; hz: number; boundary: Exclude<ArenaBoundary, 'floor'> }[] = [
+    const ceiling = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, ARENA.wallHeight + 0.3, 0));
+    this.arenaColliders.push({ collider: this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(ARENA.halfWidth + 1, 0.3, ARENA.halfDepth + 1).setRestitution(0.08), ceiling), boundary: 'ceiling' });
+    const walls: { x: number; z: number; hx: number; hz: number; boundary: Exclude<ArenaBoundary, 'floor' | 'ceiling'> }[] = [
       { x: -ARENA.halfWidth - 0.3, z: 0, hx: 0.3, hz: ARENA.halfDepth + 1, boundary: 'west' },
       { x: ARENA.halfWidth + 0.3, z: 0, hx: 0.3, hz: ARENA.halfDepth + 1, boundary: 'east' },
       { x: 0, z: -ARENA.halfDepth - 0.3, hx: ARENA.halfWidth + 1, hz: 0.3, boundary: 'north' },
@@ -632,6 +695,9 @@ export class Simulation {
     player.lastInputSeq = input.seq;
   }
 
+  /** In-process physics fixtures; this accessor is never exposed by the room transport. */
+  robotPhysics(id: string): RobotPhysics | undefined { return this.players.get(id)?.physics; }
+
   pulverize(id: string): boolean {
     const player = this.players.get(id);
     return this.phase.kind === 'fighting' && !!player && player.connected && player.health > 0
@@ -642,9 +708,14 @@ export class Simulation {
     if (this.disposed) return;
     this.tick += 1;
     if (this.phase.kind === 'finished') {
-      if (this.debris.size > 0) {
+      const moving = [...this.players.values()].some((player) => !player.physics.grounded || magnitude(player.physics.body.linvel()) > 0.15 || magnitude(player.physics.body.angvel()) > 0.25);
+      if (this.debris.size > 0 || moving) {
         this.world.timestep = dt / 2;
-        this.world.step(); this.world.step();
+        for (let substep = 0; substep < 2; substep += 1) {
+          for (const player of this.players.values()) player.physics.step(dt / 2, NEUTRAL_INPUT);
+          this.world.step();
+          for (const player of this.players.values()) { player.physics.refreshSupport(); this.containBody(player); }
+        }
         this.debris.step(dt);
       }
       return;
@@ -654,11 +725,13 @@ export class Simulation {
       this.phase = seconds <= 0.00001 ? { kind: 'fighting', seconds: MATCH_SECONDS } : { kind: 'countdown', seconds };
       this.world.timestep = dt;
       this.world.step();
+      for (const player of this.players.values()) player.physics.refreshSupport();
       return;
     }
     if (this.phase.kind === 'lobby') {
       this.world.timestep = dt;
       this.world.step();
+      for (const player of this.players.values()) player.physics.refreshSupport();
       return;
     }
 
@@ -674,10 +747,11 @@ export class Simulation {
             position: { ...player.physics.body.translation() }, strength: 0.3 });
         }
       }
-      this.world.step();
-      for (const player of this.players.values()) this.containBody(player);
+      this.world.step(this.contactEvents);
+      for (const player of this.players.values()) { player.physics.refreshSupport(); this.containBody(player); }
+      this.applyHardContacts(dt / 2);
       // Capture every eligible attack before mutating health: mutual KOs are fair.
-      for (const hit of this.findHits()) this.applyHit(hit);
+      this.applyHits(this.findHits());
       for (const player of this.players.values()) this.hitArena(player);
       const robots: HazardRobot[] = [...this.players.values()].map((player) => ({
         id: player.id, slot: player.spawnSlot, physics: player.physics,
@@ -707,21 +781,21 @@ export class Simulation {
   private containBody(player: Participant): void {
     const body = player.physics.body;
     const position = body.translation();
-    const x = clamp(position.x, -ARENA.halfWidth + 0.85, ARENA.halfWidth - 0.85);
-    const z = clamp(position.z, -ARENA.halfDepth + 0.85, ARENA.halfDepth - 0.85);
-    // Escape containment is only a safety bound, never an automatic self-righter.
-    if (x !== position.x || z !== position.z || position.y < -2 || position.y > 12) {
-      body.setTranslation({ x, y: clamp(position.y, 0.65, 12), z }, true);
-      const velocity = body.linvel();
-      body.setLinvel({ x: x !== position.x ? 0 : velocity.x, y: position.y < -2 || position.y > 12 ? 0 : velocity.y,
-        z: z !== position.z ? 0 : velocity.z }, true);
+    // Normal flight and enclosure collisions are entirely Rapier-owned. This is
+    // only an escape/non-finite fail-safe, not an invisible flight-height clamp.
+    if (!Number.isFinite(position.x + position.y + position.z) || Math.abs(position.x) > ARENA.halfWidth + 5 ||
+      Math.abs(position.z) > ARENA.halfDepth + 5 || position.y < -5 || position.y > 100) {
+      body.setTranslation({ x: Number.isFinite(position.x) ? clamp(position.x, -ARENA.halfWidth + 2, ARENA.halfWidth - 2) : 0,
+        y: Number.isFinite(position.y) ? clamp(position.y, 0.8, ARENA.wallHeight - 1) : 0.8,
+        z: Number.isFinite(position.z) ? clamp(position.z, -ARENA.halfDepth + 2, ARENA.halfDepth - 2) : 0 }, true);
+      body.setLinvel(ZERO, true);
     }
     const angular = body.angvel();
     const angularSpeed = magnitude(angular);
-    if (angularSpeed > 16) body.setAngvel(scale(angular, 16 / angularSpeed), true);
+    if (angularSpeed > 70) body.setAngvel(scale(angular, 70 / angularSpeed), true);
     const linear = body.linvel();
     const linearSpeed = magnitude(linear);
-    if (linearSpeed > 22) body.setLinvel(scale(linear, 22 / linearSpeed), true);
+    if (linearSpeed > 80) body.setLinvel(scale(linear, 80 / linearSpeed), true);
   }
 
   private findHits(): PendingHit[] {
@@ -738,33 +812,40 @@ export class Simulation {
           if (contact && (!best || contact.leverage > best.leverage)) best = contact;
         }
         if (!best) continue;
-        const energy = attacker.physics.weaponCharge ** 2;
-        hits.push({ attacker, target, contact: best, energy,
-          damage: BOTS[attacker.selection.botId].damage * energy * best.leverage });
+        hits.push({ attacker, target, contact: best });
         break;
       }
     }
     return hits;
   }
 
-  private applyHit({ attacker, target, contact, energy, damage }: PendingHit): void {
+  private applyHits(contacts: PendingHit[]): void {
+    const resolved: ResolvedHit[] = [];
+    // Eligibility is captured together, but impulse resolution must see the
+    // velocity produced by earlier contacts. Components detach only after every
+    // reciprocal impulse, keeping each solve's mass and inertia authoritative.
+    for (const hit of contacts) {
+      const { attacker, target, contact } = hit;
+      const solution = attacker.physics.solveImpact(impactBody(target.physics.body, contact.point), contact);
+      if (solution.magnitude < 1 || solution.damage < 0.01) continue;
+      target.physics.body.applyImpulseAtPoint(solution.impulse, contact.point, true);
+      attacker.physics.body.applyImpulseAtPoint(solution.recoil, contact.point, true);
+      attacker.physics.consumeImpactEnergy(solution.energyConsumed);
+      resolved.push({ ...hit, solution });
+    }
+    for (const hit of resolved) this.applyHitDamage(hit);
+  }
+
+  private applyHitDamage({ attacker, target, contact, solution }: ResolvedHit): void {
+    const damage = solution.damage;
     const delivered = Math.min(damage, target.health);
     target.health = Math.max(0, target.health - damage);
     target.physics.absorbHit();
     attacker.damageDealt += delivered;
     attacker.hits += 1;
-    const outward = scale(contact.normal, -1);
-    const vertical = attacker.physics.definition.weapon.kind === 'vertical-disc';
-    const direction = normalize(add(scale(contact.tangent, vertical ? 1 : 0.9), scale(outward, vertical ? 0.45 : 0.50)));
-    const strength = (vertical ? 5.4 : 6.2) * energy * contact.leverage;
-    const impulse = scale(direction, target.physics.body.mass() * strength);
-    target.physics.body.applyImpulseAtPoint(impulse, contact.point, true);
-    // The spinner transfers momentum both ways, including its characteristic recoil.
-    attacker.physics.body.applyImpulseAtPoint(scale(impulse, -0.48), attacker.physics.weaponMount, true);
     this.localizeDamage(target, damage, contact.point, contact.normal, contact.colliderHandle);
-    attacker.physics.spendWeaponEnergy(contact.leverage);
     this.addEvent({ kind: 'hit', sourceId: attacker.id, targetId: target.id,
-      position: { ...contact.point }, strength: clamp(energy * contact.leverage, 0.1, 1) });
+      position: { ...contact.point }, strength: clamp(damage / IMPACT_TUNING.maximumWeaponDamage, 0.1, 1) });
   }
 
   private hitArena(player: Participant): void {
@@ -774,10 +855,11 @@ export class Simulation {
     const touchesDeckBounds = bounds.min.x <= deck.x + deck.width / 2 && bounds.max.x >= deck.x - deck.width / 2 &&
       bounds.min.z <= deck.z + deck.depth / 2 && bounds.max.z >= deck.z - deck.depth / 2 && bounds.min.y <= deck.height && bounds.max.y >= 0;
     if (bounds.min.x > -ARENA.halfWidth && bounds.max.x < ARENA.halfWidth &&
-      bounds.min.z > -ARENA.halfDepth && bounds.max.z < ARENA.halfDepth && bounds.min.y > 0 && !touchesDeckBounds) return;
+      bounds.min.z > -ARENA.halfDepth && bounds.max.z < ARENA.halfDepth && bounds.min.y > 0 && bounds.max.y < ARENA.wallHeight && !touchesDeckBounds) return;
     let contact: WeaponContact | null = null;
     for (const arena of this.arenaColliders) {
       if (arena.boundary === 'floor' && (bounds.min.y > 0 || Math.abs(player.physics.alignment) > 0.65)) continue;
+      if (arena.boundary === 'ceiling' && bounds.max.y < ARENA.wallHeight) continue;
       if (arena.boundary === 'west' && bounds.min.x > -ARENA.halfWidth) continue;
       if (arena.boundary === 'east' && bounds.max.x < ARENA.halfWidth) continue;
       if (arena.boundary === 'north' && bounds.min.z > -ARENA.halfDepth) continue;
@@ -787,16 +869,15 @@ export class Simulation {
     }
     if (!contact && touchesDeckBounds) contact = player.physics.contactWith(this.hazards.deckCollider);
     if (!contact) return;
-    const energy = player.physics.weaponCharge ** 2;
-    const impulse = scale(normalize(add(contact.normal, scale(contact.tangent, -0.25))),
-      player.physics.body.mass() * Math.min(3.5, 3.2 * energy * contact.leverage));
-    player.physics.body.applyImpulseAtPoint(impulse, player.physics.weaponMount, true);
-    player.physics.spendWeaponEnergy(contact.leverage);
-    const selfDamage = energy * 1.2;
+    const solution = player.physics.solveImpact(STATIC_IMPACT_BODY, contact);
+    if (solution.magnitude < 1) return;
+    player.physics.body.applyImpulseAtPoint(solution.recoil, contact.point, true);
+    player.physics.consumeImpactEnergy(solution.energyConsumed);
+    const selfDamage = Math.min(5, solution.damage * 0.15);
     player.health = Math.max(0, player.health - selfDamage);
     this.localizeDamage(player, selfDamage, contact.point, scale(contact.normal, -1), player.physics.weaponColliderHandle);
     this.addEvent({ kind: 'hit', sourceId: player.id, targetId: 'arena', position: contact.point,
-      strength: clamp(energy * contact.leverage, 0.1, 1) });
+      strength: clamp(solution.damage / IMPACT_TUNING.maximumWeaponDamage, 0.1, 1) });
   }
 
   private applyHazardHit(hit: HazardHit): void {
@@ -817,6 +898,41 @@ export class Simulation {
     this.addEvent({ kind: 'break', sourceId: player.id, targetId: player.id, position: fragment.position, strength: 0.8 });
   }
 
+  private applyHardContacts(dt: number): void {
+    const strongest = new Map<string, { player: Participant; damage: number; point: Vector; normal: Vector; handle: number; landing: boolean }>();
+    this.contactEvents.drainContactForceEvents((event) => {
+      const first = this.world.getCollider(event.collider1());
+      const second = this.world.getCollider(event.collider2());
+      if (!first || !second) return;
+      for (const [collider, other] of [[first, second], [second, first]]) {
+        if (!collider || !other) continue;
+        const player = [...this.players.values()].find((item) => item.physics.colliders.some((part) => part.handle === collider.handle));
+        if (!player || player.physics.hardContactCooldown > 0) continue;
+        const opponent = [...this.players.values()].find((item) => item.id !== player.id && item.physics.colliders.some((part) => part.handle === other.handle));
+        if (!opponent && !other.parent()?.isFixed()) continue;
+        this.world.contactPair(collider, other, (manifold, flipped) => {
+          const point = manifold.solverContactPoint(0);
+          if (!point) return;
+          const normal = scale(manifold.normal(), flipped ? 1 : -1);
+          const relative = subtract(player.physics.previousVelocityAtPoint(point), opponent?.physics.previousVelocityAtPoint(point) ?? ZERO);
+          const speed = Math.max(0, -dot(relative, normal));
+          const landing = !opponent && normal.y > 0.55;
+          const damage = landing ? hardLandingDamage({ normalSpeed: speed, normalImpulse: event.totalForceMagnitude() * dt, mass: player.physics.body.mass() })
+            : speed > 6 ? Math.min(5, Math.sqrt(0.25 * player.physics.body.mass() * speed * speed * IMPACT_TUNING.joulesPerKgFtSquaredPerSecondSquared) * 0.10) : 0;
+          if (damage <= 0 || damage <= (strongest.get(player.id)?.damage ?? 0)) return;
+          strongest.set(player.id, { player, damage, point: { ...point }, normal, handle: collider.handle, landing });
+        });
+      }
+    });
+    for (const hit of strongest.values()) {
+      hit.player.physics.hardContactCooldown = IMPACT_TUNING.landingCooldown;
+      hit.player.health = Math.max(0, hit.player.health - hit.damage);
+      this.localizeDamage(hit.player, hit.damage, hit.point, scale(hit.normal, -1), hit.handle);
+      this.addEvent({ kind: hit.landing ? 'landing' : 'hit', sourceId: hit.landing ? hit.player.id : 'arena',
+        targetId: hit.player.id, position: hit.point, strength: clamp(hit.damage / 16, 0.1, 1) });
+    }
+  }
+
   private addEvent(event: Omit<MatchEvent, 'id'>): void {
     this.eventId += 1;
     this.events.push({ id: this.eventId, ...event });
@@ -828,12 +944,8 @@ export class Simulation {
     this.hazards.freeze();
     for (const player of this.players.values()) {
       player.input = { ...NEUTRAL_INPUT, seq: player.lastInputSeq };
-      player.physics.weaponCharge = 0;
       player.physics.wheelSpeedLeft = 0;
       player.physics.wheelSpeedRight = 0;
-      player.physics.body.setLinvel(ZERO, true);
-      player.physics.body.setAngvel(ZERO, true);
-      player.physics.body.setBodyType(RAPIER.RigidBodyType.Fixed, true);
     }
   }
   forfeit(id: string): void {
@@ -866,6 +978,7 @@ export class Simulation {
         id: player.id, spawnSlot: player.spawnSlot, name: player.name, ...player.selection,
         position: { ...player.physics.body.translation() }, rotation: { ...player.physics.body.rotation() },
         yaw: player.physics.yaw, velocity: { ...player.physics.body.linvel() },
+        grounded: player.physics.grounded,
         angularVelocity: { ...player.physics.body.angvel() }, health: player.health,
         weaponCharge: player.physics.weaponCharge, weaponRpm: player.physics.weaponRpm,
         weaponAngle: player.physics.weaponAngle, weaponActive: player.physics.weaponCharge >= 0.12,
@@ -885,6 +998,7 @@ export class Simulation {
     if (this.disposed) return;
     this.disposed = true;
     this.debris.clear();
+    this.contactEvents.free();
     this.players.clear();
     this.world.free();
   }

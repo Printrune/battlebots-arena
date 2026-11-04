@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import type { Room } from '@colyseus/sdk';
-import { BOTS, TICK_RATE, matchSnapshotSchema } from '../src/shared/protocol';
+import { BOTS, MATCH_SECONDS, TICK_RATE, matchSnapshotSchema } from '../src/shared/protocol';
 import type { JoinOptions, MatchState, PlayerInput } from '../src/shared/protocol';
 
 try { process.loadEnvFile(); } catch (error) {
@@ -34,6 +34,9 @@ export interface TrackedRoom {
   maxSnapshotGapMs: number;
   errors: string[];
   sequence: number;
+  maximumHeightFeet: number;
+  airborneSnapshots: number;
+  landingEvents: number;
 }
 
 export async function waitFor(
@@ -80,7 +83,9 @@ export async function createHarness() {
     const state: TrackedRoom = {
       room, snapshot: null, snapshots: 0, connected: true,
       drops: 0, reconnects: 0, lastSnapshotAt: 0, maxSnapshotGapMs: 0, errors: [], sequence: 0,
+      maximumHeightFeet: 0, airborneSnapshots: 0, landingEvents: 0,
     };
+    let lastObservedEvent = -1;
     room.reconnection.minUptime = 0;
     room.reconnection.minDelay = 100;
     room.reconnection.maxDelay = 1_000;
@@ -94,6 +99,17 @@ export async function createHarness() {
       state.lastSnapshotAt = now;
       state.snapshot = snapshot.data;
       state.snapshots += 1;
+      if (snapshot.data.phase.kind === 'fighting') {
+        for (const player of snapshot.data.players) {
+          const height = player.position.y - BOTS[player.botId].physics.wheelRadius;
+          state.maximumHeightFeet = Math.max(state.maximumHeightFeet, height);
+          if (!player.grounded && height > 0.3) state.airborneSnapshots += 1;
+        }
+      }
+      for (const event of snapshot.data.events) {
+        if (event.id > lastObservedEvent && event.kind === 'landing') state.landingEvents += 1;
+        lastObservedEvent = Math.max(lastObservedEvent, event.id);
+      }
     });
     room.onMessage('notice', () => undefined);
     room.onDrop(() => { state.connected = false; state.drops += 1; });
@@ -212,7 +228,7 @@ async function main(): Promise<void> {
     await waitFor('restored connected seat', () => first.snapshot?.players.find((player) => player.id === originalSeat)?.connected === true);
     report('reconnect', { sameSeat: true, drops: first.drops, reconnects: first.reconnects });
 
-    await waitFor('completed fight', () => first.snapshot?.phase.kind === 'finished' && second.snapshot?.phase.kind === 'finished', 130_000);
+    await waitFor('completed fight', () => first.snapshot?.phase.kind === 'finished' && second.snapshot?.phase.kind === 'finished', (MATCH_SECONDS + 10) * 1000);
     clearInterval(driving);
     driving = undefined;
     const firstPhase = first.snapshot?.phase;
@@ -221,6 +237,7 @@ async function main(): Promise<void> {
     assert.deepEqual(firstPhase.result, secondPhase.result);
     assert.ok(first.snapshot?.players.some((player) => player.damageDealt > 0));
     report('combat-result', { ...firstPhase.result, players: first.snapshot?.players.map(({ name, health, hits }) => ({ name, health, hits })) });
+    report('flight-and-landings', { maximumHeightAboveAxleFeet: first.maximumHeightFeet, airborneSnapshots: first.airborneSnapshots, hardLandingEvents: first.landingEvents });
 
     first.room.send('rematch');
     second.room.send('rematch');

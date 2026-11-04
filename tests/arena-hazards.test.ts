@@ -6,13 +6,14 @@ import type { HazardRobot } from '../src/server/arena-hazards';
 import { createSimulation, RobotPhysics } from '../src/server/simulation';
 import { ARENA_LAYOUT, KILLSAWS, PULVERIZERS, SCREWS, arenaStateSchema, pulverizerHead } from '../src/shared/arena';
 import { BOTS, NEUTRAL_INPUT } from '../src/shared/protocol';
+import { PHYSICS } from '../src/shared/physics';
 
 const DT = 1 / 60;
 
 before(async () => { const initialized = await createSimulation('hazard-initialization'); initialized.dispose(); });
 
 function fixture(position = { x: 0, y: 0.49, z: 0 }) {
-  const world = new RAPIER.World({ x: 0, y: -19.62, z: 0 });
+  const world = new RAPIER.World({ x: 0, y: -PHYSICS.gravity, z: 0 });
   world.timestep = DT;
   const floor = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, -0.2, 0));
   world.createCollider(RAPIER.ColliderDesc.cuboid(25, 0.2, 25).setFriction(0.45), floor);

@@ -5,6 +5,7 @@ import { createSimulation, RobotPhysics } from '../src/server/simulation';
 import type { Simulation } from '../src/server/simulation';
 import { ARENA, BOTS, INPUT_TIMEOUT_MS, MATCH_SECONDS, NEUTRAL_INPUT, TICK_RATE, matchSnapshotSchema } from '../src/shared/protocol';
 import type { BotId, PlayerInput } from '../src/shared/protocol';
+import { PHYSICS } from '../src/shared/physics';
 
 const DT = 1 / TICK_RATE;
 
@@ -14,7 +15,7 @@ before(async () => {
 });
 
 function fixture(botId: BotId) {
-  const world = new RAPIER.World({ x: 0, y: -19.62, z: 0 });
+  const world = new RAPIER.World({ x: 0, y: -PHYSICS.gravity, z: 0 });
   world.timestep = 1 / 60;
   const ground = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, -0.2, 0));
   world.createCollider(RAPIER.ColliderDesc.cuboid(50, 0.2, 50).setFriction(0.45), ground);
@@ -253,6 +254,14 @@ test('Witch Doctor self-rights through torque over time rather than teleporting 
   try {
     value.robot.body.setTranslation({ x: 0, y: 1.05, z: 0 }, true);
     value.robot.body.setRotation({ x: 0, y: 0, z: 1, w: 0 }, true);
+    const airborneVelocity = { ...value.robot.body.linvel() };
+    const airborneAngular = { ...value.robot.body.angvel() };
+    assert.equal(value.robot.step(1 / 60, { ...NEUTRAL_INPUT, recover: true }), false);
+    assert.equal(value.robot.grounded, false);
+    assert.equal(value.robot.recovering, false);
+    assert.equal(value.robot.recoveryCooldown, 0);
+    assert.deepEqual({ ...value.robot.body.linvel() }, airborneVelocity, 'A self-right command cannot kick an unsupported robot.');
+    assert.deepEqual({ ...value.robot.body.angvel() }, airborneAngular, 'A self-right command cannot rotate an unsupported robot.');
     driveFixture(value, 1.2);
     assert.equal(value.robot.inverted, true);
     const rotation = { ...value.robot.body.rotation() };
@@ -262,6 +271,18 @@ test('Witch Doctor self-rights through torque over time rather than teleporting 
     assert.deepEqual({ ...value.robot.body.translation() }, position);
     assert.equal(value.robot.recovering, true);
     assert.ok(value.robot.recoveryCooldown > 4);
+    const supportedPose = { ...value.robot.body.translation() };
+    const supportedRotation = { ...value.robot.body.rotation() };
+    value.robot.body.setTranslation({ x: 0, y: 4, z: 0 }, true);
+    value.world.step();
+    const launchedVelocity = { ...value.robot.body.linvel() };
+    const launchedAngular = { ...value.robot.body.angvel() };
+    value.robot.step(1 / 60, { ...NEUTRAL_INPUT, recover: true });
+    assert.equal(value.robot.grounded, false);
+    assert.deepEqual({ ...value.robot.body.linvel() }, launchedVelocity, 'An active arm cannot supply a floor reaction in flight.');
+    assert.deepEqual({ ...value.robot.body.angvel() }, launchedAngular, 'An active arm cannot apply external recovery torque in flight.');
+    value.robot.body.setTranslation(supportedPose, true);
+    value.robot.body.setRotation(supportedRotation, true);
     driveFixture(value, 1.6, { ...NEUTRAL_INPUT, recover: true });
     assert.ok(value.robot.alignment > 0.5, `Self-righting finished at alignment ${value.robot.alignment}.`);
     assert.equal(value.robot.step(1 / 60, { ...NEUTRAL_INPUT, recover: true }), false);
@@ -289,8 +310,8 @@ test('spinner inertia coasts after power is cut and full-speed Witch Doctor turn
     driveFixture(stopped, 0.5);
     driveFixture(spinning, 2.2, { ...NEUTRAL_INPUT, weapon: true });
     assert.ok(spinning.robot.weaponCharge > 0.99);
-    driveFixture(stopped, 0.7, { ...NEUTRAL_INPUT, steer: 1 });
-    driveFixture(spinning, 0.7, { ...NEUTRAL_INPUT, steer: 1, weapon: true });
+    driveFixture(stopped, 1.3, { ...NEUTRAL_INPUT, steer: 1 });
+    driveFixture(spinning, 1.3, { ...NEUTRAL_INPUT, steer: 1, weapon: true });
     assert.ok(Math.abs(spinning.robot.yaw) < Math.abs(stopped.robot.yaw));
     driveFixture(spinning, 1);
     assert.ok(spinning.robot.weaponRpm > 0, 'A heavy unpowered spinner must coast instead of stopping instantly.');
@@ -315,7 +336,7 @@ test('weapon contacts use the actual swept disc and bar volumes instead of a dis
     assert.ok(contact.tangent.y > 0, 'The upright vertical drisc should bite upward at its front.');
     value.robot.weaponCharge = 1;
     const before = value.robot.weaponRpm;
-    value.robot.spendWeaponEnergy(contact.leverage);
+    value.robot.consumeImpactEnergy(value.robot.storedRotorEnergy * 0.2);
     assert.ok(value.robot.weaponRpm < before);
     assert.ok(value.robot.weaponCharge > 0);
     assert.ok(value.robot.weaponCooldown > 0);
@@ -371,7 +392,8 @@ test('a spinning weapon hitting an arena wall spends energy and emits an arena c
       now += DT * 1000;
       const player = simulation.snapshot().players.find((item) => item.id === 'b');
       assert.ok(player);
-      const angle = Math.atan2(Math.sin(Math.PI / 2 - player.yaw), Math.cos(Math.PI / 2 - player.yaw));
+      const desiredYaw = Math.atan2(ARENA.halfWidth - player.position.x, -player.position.z);
+      const angle = Math.atan2(Math.sin(desiredYaw - player.yaw), Math.cos(desiredYaw - player.yaw));
       simulation.setInput('b', { seq: tick, throttle: Math.abs(angle) < 0.3 ? 0.85 : 0,
         steer: Math.max(-1, Math.min(1, angle * 2)), weapon: true, recover: false }, now);
       simulation.step(DT, now);

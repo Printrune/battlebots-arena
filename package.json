@@ -1,6 +1,6 @@
 {
   "name": "battlebots-arena",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.25.0",
@@ -14,6 +14,7 @@
     "verify:multiplayer": "tsx scripts/verify-multiplayer.ts",
     "verify:models": "tsx scripts/verify-models.ts",
     "verify:damage-models": "tsx scripts/verify-damage-models.ts",
+    "verify:life-bars": "tsx scripts/verify-life-bars.ts",
     "verify:damage-network": "tsx scripts/verify-damage-network.ts",
     "verify:arena": "tsx scripts/verify-arena.ts",
     "verify:arena-network": "tsx scripts/verify-arena-network.ts",

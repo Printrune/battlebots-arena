@@ -42,6 +42,8 @@ export interface BotWeapon {
   spinDirection: 1 | -1;
   energyLossOnHit: number;
   gyroStrength: number;
+  rotorMassKg: number;
+  inertiaKgFt2: number;
 }
 
 export interface BotDefinition {
@@ -80,6 +82,7 @@ export const BOTS: Record<BotId, BotDefinition> = {
       kind: 'vertical-disc', mount: { x: 0, y: 0.22, z: 1.08 }, radius: 0.62,
       halfWidth: 0.39, spinUpSeconds: 2.1, coastDownSeconds: 5.5,
       maxRpm: 4_500, spinDirection: -1, energyLossOnHit: 0.45, gyroStrength: 0.8,
+      rotorMassKg: 20.4, inertiaKgFt2: 4.7,
     },
   },
   tombstone: {
@@ -98,6 +101,7 @@ export const BOTS: Record<BotId, BotDefinition> = {
       kind: 'horizontal-bar', mount: { x: 0, y: -0.30, z: 1.67 }, radius: 1.65,
       halfWidth: 0.1, spinUpSeconds: 3.2, coastDownSeconds: 8,
       maxRpm: 2_000, spinDirection: 1, energyLossOnHit: 0.55, gyroStrength: 0.2,
+      rotorMassKg: 31.8, inertiaKgFt2: 28.9,
     },
   },
 };
@@ -133,6 +137,7 @@ export const playerSnapshotSchema = z.object({
   position: vectorSchema, rotation: quaternionSchema, yaw: z.number(),
   velocity: vectorSchema, health: z.number(), weaponCharge: z.number(),
   angularVelocity: vectorSchema, weaponRpm: z.number(), weaponAngle: z.number(),
+  grounded: z.boolean(),
   inverted: z.boolean(), recovering: z.boolean(), recoveryProgress: z.number(),
   recoveryCooldown: z.number(), wheelSpeedLeft: z.number(), wheelSpeedRight: z.number(),
   weaponActive: z.boolean(), connected: z.boolean(), ready: z.boolean(),
@@ -158,7 +163,7 @@ export const matchPhaseSchema = z.discriminatedUnion('kind', [
 ]);
 export type MatchPhase = z.infer<typeof matchPhaseSchema>;
 export const matchEventSchema = z.object({
-  id: z.number(), kind: z.enum(['hit', 'recover', 'hazard', 'break']), sourceId: z.string(),
+  id: z.number(), kind: z.enum(['hit', 'recover', 'hazard', 'break', 'landing']), sourceId: z.string(),
   targetId: z.string(), position: vectorSchema, strength: z.number(),
 });
 export type MatchEvent = z.infer<typeof matchEventSchema>;

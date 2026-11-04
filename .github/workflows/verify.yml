@@ -17,5 +17,6 @@ jobs:
       - run: pnpm test
       - run: pnpm verify:models
       - run: pnpm verify:damage-models
+      - run: pnpm verify:life-bars
       - run: pnpm verify:arena
       - run: pnpm build

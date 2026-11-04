@@ -314,6 +314,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       watchForFailures();
       try {
         await helper.enterXRAsync('immersive-vr', 'local-floor', renderTarget, { optionalFeatures: ['local-floor', 'hand-tracking'] });
+        diagnostics.renderingReady();
       } catch (cause: unknown) {
         diagnostics.failure(errorMessage(cause));
         try {

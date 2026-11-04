@@ -15,6 +15,7 @@ export interface VRDiagnosticReport {
   version: string;
   state: 'idle' | 'requested' | 'presenting' | 'ended' | 'failed';
   elapsedMs: number;
+  renderLoopReady: boolean;
   nativeFrames: number;
   validPoseFrames: number;
   drawFrames: number;
@@ -38,7 +39,7 @@ export interface VRDiagnosticReport {
 
 function emptyReport(): VRDiagnosticReport {
   return {
-    version, state: 'idle', elapsedMs: 0, nativeFrames: 0, validPoseFrames: 0, drawFrames: 0,
+    version, state: 'idle', elapsedMs: 0, renderLoopReady: false, nativeFrames: 0, validPoseFrames: 0, drawFrames: 0,
     eyeDrawPasses: 0, drawCalls: 0, eyes: 0, outputTargets: 0,
     framebufferWidth: 0, framebufferHeight: 0, framebufferStatus: null,
     targetMatches: null, opaqueFramebuffer: null, viewports: {}, glErrors: [], priorGlErrors: [],
@@ -98,6 +99,13 @@ export class VRDiagnostics {
     this.instrumentation = new SceneInstrumentation(this.scene);
     this.visibility(session.visibilityState);
     this.interval = setInterval(() => this.check(), 500);
+  }
+
+  renderingReady(): void {
+    if (!this.session || this.report.renderLoopReady) return;
+    this.report.renderLoopReady = true;
+    // Native reference-space and framebuffer setup precede the XR render loop.
+    this.visibleSince = performance.now();
   }
 
   visibility(value: string): void {
@@ -187,15 +195,20 @@ export class VRDiagnostics {
         if (this.report.glErrors.length < 8 && !this.report.glErrors.includes(error)) this.report.glErrors.push(error);
       }
     }
+    // Shader compilation and GL queries can block this same XR callback. Its
+    // completion is current progress, not a stopped frame or tracking stream.
+    const completedAt = performance.now();
+    this.lastFrameAt = completedAt;
+    if (this.helper && this.helper.camera.trackingState !== WebXRTrackingState.NOT_TRACKING) this.lastPoseAt = completedAt;
     if (calls > 0 && this.report.outputTargets > 0 && this.report.targetMatches !== false) {
-      this.lastDrawAt = now;
+      this.lastDrawAt = completedAt;
       if (this.lastDrawnFrame !== this.report.nativeFrames) { this.lastDrawnFrame = this.report.nativeFrames; this.report.drawFrames += 1; }
     }
     this.check();
   }
 
   private check(): void {
-    if (!this.session) return;
+    if (!this.session || !this.report.renderLoopReady) return;
     const reason = xrHealthFailure({
       visible: this.session.visibilityState === 'visible', visibleSince: this.visibleSince,
       lastFrameAt: this.lastFrameAt, lastPoseAt: this.lastPoseAt, lastDrawAt: this.lastDrawAt,

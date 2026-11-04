@@ -29,8 +29,8 @@ Controls must return to neutral when the XR session loses focus, a driving input
 
 1. Open the game's GitHub Pages HTTPS address in Meta Quest Browser.
 2. Start solo practice. The Pages build does not require a password or a game server.
-3. Select the game's VR entry control and accept the browser's immersive-session prompt.
-4. Confirm the arena scale and use recenter if the driver station needs adjustment.
+3. Select **Enter VR** and accept the browser's immersive-session prompt. Practice waits in the lobby when VR is available.
+4. Choose **I AM READY** on the floating tablet to start. Confirm the arena scale and use recenter if the driver station needs adjustment.
 
 `http://127.0.0.1:3000/` is local to the computer running the server. On the headset, that address refers to the headset itself. A normal LAN address over plain HTTP also does not provide the secure context required by WebXR. Use a trusted HTTPS deployment or a properly configured trusted local HTTPS origin. [WebXR secure-context and session requirements](https://www.w3.org/TR/webxr/)
 

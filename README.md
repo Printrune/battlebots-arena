@@ -8,7 +8,7 @@ The GitHub Pages edition runs solo practice in a browser worker. It uses the sam
 
 Build the static edition with `pnpm build:pages`. The output is `dist/pages`, with assets rooted at `/battlebots-arena/`. The Pages workflow publishes it over HTTPS from `codex/arena-demo`.
 
-In a compatible headset browser, start a match and select **Enter VR**. The player sits beside the BattleBox with head tracking and a fixed control tablet. Use the controller stick to drive, A/right trigger to toggle the weapon, B to recover and X to use pulverizers. The tablet also supports ray-selected actions, diagonal hold-to-drive controls, ready, rematch, recenter and exit. Bot impacts and defeat effects do not move the VR camera.
+In a compatible headset browser, start a match and select **Enter VR**. Practice waits for **Ready** on VR-capable browsers, allowing entry and permission prompts before combat starts. The player sits beside the BattleBox with head tracking and a fixed control tablet. Use the controller stick to drive, A/right trigger to toggle the weapon, B to recover and X to use pulverizers. The tablet also supports ray-selected actions, diagonal hold-to-drive controls, ready, rematch, recenter and exit. Bot impacts and defeat effects do not move the VR camera.
 
 Quest 3 is the first hardware target. Other headsets use runtime WebXR detection. No physical headset has been tested yet, so compatibility, controller mappings and sustained frame rate remain unverified. See [VR support and setup](docs/vr-support.md).
 

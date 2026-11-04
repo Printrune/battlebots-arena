@@ -58,13 +58,13 @@ export function createVRHud(scene: Scene, callbacks: Callbacks): VRHud {
   let fighting = false;
   let redraws = 0;
   let rendered = '';
-  let status = 'OPEN A MATCH ON THE BROWSER SCREEN';
+  let status = 'NO MATCH';
   let timer = '03:00';
   let localLabel = 'YOUR ROBOT';
   let opponentLabel = 'OPPONENT';
   let localHealth = 100;
   let opponentHealth = 100;
-  let weaponStatus = 'Controller stick or hold the direction buttons';
+  let weaponStatus = 'WEAPON STANDBY';
   let context: CanvasRenderingContext2D | null = null;
   let texture: DynamicTexture | null = null;
   const forward = Vector3.Zero();
@@ -164,9 +164,6 @@ export function createVRHud(scene: Scene, callbacks: Callbacks): VRHud {
       context.textAlign = 'center'; context.font = 'bold 24px Arial'; context.fillStyle = button.enabled ? '#edf2dc' : '#77847e';
       context.fillText(button.label, button.x + button.width / 2, button.y + button.height / 2, button.width - 16);
     }
-    context.textAlign = 'left'; context.fillStyle = '#a8b4aa'; context.font = '19px Arial';
-    context.fillText('STICK: DRIVE   A / TRIGGER: WEAPON', 552, 556, 520);
-    context.fillText('B: SELF RIGHT   X: PULVERIZERS', 552, 584, 520);
     texture.update(true);
   }
   // DynamicTexture is blocking until its first upload. Initialize it before any
@@ -228,11 +225,11 @@ export function createVRHud(scene: Scene, callbacks: Callbacks): VRHud {
       const seconds = phase?.kind === 'fighting' || phase?.kind === 'countdown' ? Math.ceil(Math.max(0, phase.seconds)) : MATCH_SECONDS;
       timer = phase?.kind === 'finished' ? 'FINAL' : `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
       status = phase?.kind === 'finished' ? phase.result.winnerId === null ? 'DRAW' : phase.result.winnerId === localId ? 'VICTORY' : 'BACK TO THE WORKSHOP'
-        : phase?.kind === 'fighting' ? 'LIVE / KEEP YOUR BOT IN SIGHT'
-          : phase?.kind === 'countdown' ? 'GET READY'
-            : phase?.kind === 'lobby' ? local?.ready ? 'WAITING FOR OPPONENT' : 'READY TO RUMBLE?' : 'OPEN A MATCH ON THE BROWSER SCREEN';
+        : phase?.kind === 'fighting' ? 'LIVE'
+          : phase?.kind === 'countdown' ? 'COUNTDOWN'
+            : phase?.kind === 'lobby' ? local?.ready ? 'WAITING FOR OPPONENT' : 'LOBBY' : 'NO MATCH';
       const integrity = local ? partIntegrity(local.damage, 'weapon') : 0;
-      weaponStatus = local ? `~${Math.round(local.weaponRpm / 250) * 250} RPM / ${integrity <= 0 ? 'WEAPON DESTROYED' : local.weaponActive ? 'WEAPON SPINNING' : 'WEAPON STANDBY'}` : 'Controller stick or hold the direction buttons';
+      weaponStatus = local ? `~${Math.round(local.weaponRpm / 250) * 250} RPM / ${integrity <= 0 ? 'WEAPON DESTROYED' : local.weaponActive ? 'WEAPON SPINNING' : 'WEAPON STANDBY'}` : 'WEAPON STANDBY';
       updateControl('weapon', fighting && integrity > 0, local?.weaponActive ? 'WEAPON ON' : 'SPIN UP');
       updateControl('recover', fighting && !!local && BOTS[local.botId].physics.selfRight && !local.recovering && local.recoveryCooldown <= 0,
         local?.recovering ? 'RIGHTING' : local && !BOTS[local.botId].physics.selfRight ? 'INVERTIBLE' : local && local.recoveryCooldown > 0 ? `RIGHT IN ${Math.ceil(local.recoveryCooldown)}s` : 'SELF RIGHT');

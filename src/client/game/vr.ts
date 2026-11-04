@@ -14,6 +14,7 @@ import type { MatchState } from '../../shared/protocol';
 import type { VRCallbacks, VRStatus } from '../../shared/vr';
 import { readVRInput } from './vr-input';
 import type { VRControllerSample } from './vr-input';
+import { VRDiagnostics } from './vr-diagnostics';
 
 export const VR_FEET_PER_METER = 3.28084;
 export const VR_CONTROLLER_PROFILE = 'generic-trigger';
@@ -40,6 +41,7 @@ export interface VRRig {
   enter(): Promise<void>;
   exit(): Promise<void>;
   recenter(): void;
+  getReport(): string;
   pulse(dt: number): void;
   setMatch(snapshot: MatchState | null, localId: string | null): void;
   dispose(): void;
@@ -66,6 +68,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
   let removeVisibilityListener: (() => void) | null = null;
   let removeFailureListeners: (() => void) | null = null;
   let status: VRStatus = { kind: 'checking' };
+  const diagnostics = new VRDiagnostics(scene, (message) => { void recover(new Error(message)); });
   const origin = new TransformNode('vr-tracking-origin', scene);
   const contextLost = scene.getEngine().onContextLostObservable.add(() => {
     void recover(new Error('The graphics context was lost while rendering VR.'));
@@ -107,6 +110,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
     if (disposed || recoveringFromFailure || !active() && !entering) return;
     recoveringFromFailure = true;
     const message = errorMessage(cause);
+    diagnostics.failure(message);
     console.error({ event: 'vr_render_failed', message });
     try {
       neutral();
@@ -119,11 +123,12 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       console.error({ event: 'vr_exit_failed', message: errorMessage(exitFailure) });
     } finally {
       entering = false;
+      diagnostics.stop();
       removeFailureListeners?.(); removeFailureListeners = null;
       if (!active()) { scene.activeCamera = desktopCamera; report({ kind: 'available' }); }
       else report({ kind: 'paused' });
       recoveringFromFailure = false;
-      if (!disposed) callbacks.onError?.(`VR stopped because of a rendering error: ${message}`);
+      if (!disposed) callbacks.onError?.(`VR stopped because of a rendering error: ${message} ${diagnostics.compact()}`);
     }
   }
 
@@ -223,7 +228,9 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       selection.disableSelectionMeshLighting = true;
       renderTarget = helper.sessionManager.getWebXRRenderTarget({
         canvasElement: scene.getEngine().getRenderingCanvas() ?? undefined,
-        canvasOptions: { framebufferScaleFactor: 0.85, antialias: true, alpha: false, depth: true, stencil: false },
+        // The HUD clears scene depth for its overlay pass, so it is not valid
+        // compositor reprojection depth. Keep depth testing local to rendering.
+        canvasOptions: { framebufferScaleFactor: 0.85, antialias: true, alpha: false, depth: true, stencil: false, ignoreDepthValues: true },
       });
       helper.onInitialXRPoseSetObservable.add((camera) => {
         // The helper copies the desktop camera before the first tracked frame.
@@ -233,7 +240,9 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         awaitingTrackedAnchor = true;
       });
       helper.sessionManager.onXRFrameObservable.add(() => {
-        if (!helper || helper.state !== WebXRState.IN_XR || disposed) return;
+        if (!helper || disposed) return;
+        diagnostics.pose(helper.camera);
+        if (helper.state !== WebXRState.IN_XR) return;
         // An immersive session can start before tracking yields a viewer pose.
         // Anchor only once that pose exists, then keep ordinary tracking local.
         if (awaitingTrackedAnchor && hasPose()) recenter();
@@ -243,6 +252,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
           report({ kind });
         }
       });
+      helper.sessionManager.onXRFrameObservable.add(() => diagnostics.frame(), undefined, true);
       helper.onStateChangedObservable.add((state) => {
         if (disposed) return;
         if (state === WebXRState.IN_XR) {
@@ -251,6 +261,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         } else if (state === WebXRState.ENTERING_XR) {
           neutral(); report({ kind: 'entering' });
         } else if (state === WebXRState.NOT_IN_XR) {
+          diagnostics.stop();
           neutral(); entering = false;
           removeVisibilityListener?.(); removeVisibilityListener = null;
           removeFailureListeners?.(); removeFailureListeners = null;
@@ -261,7 +272,9 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         }
       });
       helper.sessionManager.onXRSessionInit.add((session) => {
+        if (helper && renderTarget) diagnostics.start(session, helper, renderTarget);
         const visibility = () => {
+          diagnostics.visibility(session.visibilityState);
           neutral();
           report({ kind: helper?.state !== WebXRState.IN_XR ? 'entering' : focused() ? 'active' : 'paused' });
         };
@@ -297,15 +310,18 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       if (disposed || active() || entering) return;
       if (!helper || !renderTarget) throw new Error(status.kind === 'unavailable' ? status.reason : 'VR is not ready yet.');
       entering = true;
+      diagnostics.request();
       watchForFailures();
       try {
         await helper.enterXRAsync('immersive-vr', 'local-floor', renderTarget, { optionalFeatures: ['local-floor', 'hand-tracking'] });
       } catch (cause: unknown) {
+        diagnostics.failure(errorMessage(cause));
         try {
           await endSession();
         } catch (exitFailure: unknown) {
           console.error({ event: 'vr_exit_failed', message: errorMessage(exitFailure) });
         } finally {
+          diagnostics.stop();
           entering = false; neutral();
           removeFailureListeners?.(); removeFailureListeners = null;
           if (!active()) { scene.activeCamera = desktopCamera; report({ kind: 'available' }); }
@@ -319,6 +335,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       await endSession();
     },
     recenter,
+    getReport() { return diagnostics.getReport(); },
     pulse(_dt) {
       if (disposed || !active() || !input) return;
       const enabled = focused();
@@ -345,6 +362,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       removeVisibilityListener?.(); removeVisibilityListener = null;
       removeFailureListeners?.(); removeFailureListeners = null;
       scene.getEngine().onContextLostObservable.remove(contextLost);
+      diagnostics.dispose();
       if (helper && active()) void helper.exitXRAsync().catch(() => undefined);
       input?.dispose(); input = null;
       renderTarget?.dispose(); renderTarget = null;

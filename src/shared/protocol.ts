@@ -190,6 +190,7 @@ export interface ArenaRenderer {
   enterVR(): Promise<void>;
   exitVR(): Promise<void>;
   recenterVR(): void;
+  getVRReport(): string;
   dispose(): void;
 }
 

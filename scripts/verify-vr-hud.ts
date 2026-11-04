@@ -43,7 +43,7 @@ try {
   assert.equal(hud.stats.meshes, 19); assert.equal(scene.meshes.length, 19);
   assert.equal(hud.stats.textures, 0, 'NullEngine proof uses no DOM texture allocation.');
   assert.equal(hud.stats.redraws, 1, 'The factory draws the initial atlas before a match or shader prewarm.');
-  assert.equal(scene.getMeshByName('vr-desk-screen')?.metadata.status, 'OPEN A MATCH ON THE BROWSER SCREEN');
+  assert.equal(scene.getMeshByName('vr-desk-screen')?.metadata.status, 'NO MATCH');
   hud.setMatch(simulation.snapshot(), 'a');
   click('vr-control-ready'); assert.deepEqual(actions, [], 'Inactive panels cannot dispatch a click.');
   hud.setActive(true, camera);

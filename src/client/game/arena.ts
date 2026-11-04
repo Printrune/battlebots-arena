@@ -49,6 +49,7 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
   const engine = new Engine(canvas, true, {
     preserveDrawingBuffer: false, stencil: false, powerPreference: 'high-performance',
     adaptToDeviceRatio: false, audioEngine: false,
+    xrCompatible: true,
   });
   const scene = new Scene(engine);
   scene.clearColor = new Color4(0.047, 0.061, 0.071, 1);
@@ -523,6 +524,7 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
     },
     async exitVR() { await vr.exit(); },
     recenterVR() { vr.recenter(); if (vr.focused) vrHud.setActive(true, vr.camera); },
+    getVRReport() { return vr.getReport(); },
     dispose() {
       if (disposed) return;
       disposed = true;

@@ -169,6 +169,9 @@ export function createVRHud(scene: Scene, callbacks: Callbacks): VRHud {
     context.fillText('B: SELF RIGHT   X: PULVERIZERS', 552, 584, 520);
     texture.update(true);
   }
+  // DynamicTexture is blocking until its first upload. Initialize it before any
+  // caller prewarms this hidden HUD, even when no match has been received yet.
+  draw();
   function releaseDrive(): void {
     const moving = held.size > 0;
     held.clear(); pressed.clear();

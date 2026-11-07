@@ -2,7 +2,7 @@ export type VRStatus =
   | { kind: 'checking' | 'available' | 'entering' | 'active' | 'paused' }
   | { kind: 'unavailable'; reason: string };
 
-export type VRAction = 'weapon' | 'recover' | 'pulverize' | 'ready' | 'rematch' | 'leave' | 'exit' | 'recenter';
+export type VRAction = 'weapon' | 'recover' | 'pulverize' | 'ready' | 'rematch' | 'recenter';
 
 export interface VRCallbacks {
   onStatus(status: VRStatus): void;

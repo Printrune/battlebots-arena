@@ -226,6 +226,9 @@ h1 span { color: var(--amber); }
 .damage-notice strong { display: block; font-size: 9px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; }
 .damage-notice span { display: block; margin-top: 4px; color: #b4b89e; font-size: 8px; line-height: 1.5; }
 .match-utility { position: absolute; top: 135px; right: max(34px, env(safe-area-inset-right)); display: flex; gap: 8px; z-index: 12; }
+.app--vr .arena-stage > :not(.arena-canvas),
+.app--vr .toast,
+.app--vr .modal-backdrop { display: none !important; }
 .match-utility .icon-button { background: #111816af; border-color: #7b92814d; width: 33px; height: 33px; color: #a6bba8; }
 .vr-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 56px; height: 33px; padding: 0 7px; border: 1px solid #a5c47c77; background: #16251ddd; color: #cce4af; font: inherit; font-size: 8px; font-weight: 700; letter-spacing: .7px; cursor: pointer; }
 .vr-button:disabled { opacity: .5; cursor: default; }

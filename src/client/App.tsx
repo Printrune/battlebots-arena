@@ -482,14 +482,12 @@ export function App() {
       case 'pulverize': pulverize(); break;
       case 'ready': if (currentSnapshot.current?.phase.kind === 'lobby') connection.current?.ready(); break;
       case 'rematch': if (currentSnapshot.current?.phase.kind === 'finished') { connection.current?.rematch(); setRematchPending(true); } break;
-      case 'leave': void leaveMatch(); break;
-      case 'exit': void renderer.current?.exitVR().catch(() => undefined); break;
       case 'recenter': renderer.current?.recenterVR(); break;
       default: { const unexpected: never = action; throw new Error(`Unknown VR action: ${unexpected}`); }
     }
   };
 
-  return <div className={`app ${inRoom ? 'app--match' : ''}`}>
+  return <div className={`app ${inRoom ? 'app--match' : ''} ${immersive ? 'app--vr' : ''}`}>
     <header className="site-header" hidden={inRoom}>
       <a href={BASE_PATH} className="wordmark" aria-label="BattleBots Arena home"><span>BATTLE<span className="wordmark-bots">BOTS</span><sup>®</sup></span><small>ARENA</small></a>
       <nav className="header-nav" aria-label="Main navigation"><span className="nav-active">THE GARAGE</span></nav>
@@ -512,7 +510,7 @@ export function App() {
             <div className="preview-corner"><span className="live-pill"><i /> LIVE 3D PREVIEW</span><button className="arena-view-toggle" onClick={() => setOverview((enabled) => !enabled)} aria-pressed={overview}>{overview ? 'BACK TO ROBOT' : 'INSPECT BATTLEBOX'}<Icon name="arrow" size={12} /></button></div>
             <div className="preview-reticle preview-reticle--tl" /><div className="preview-reticle preview-reticle--br" />
             <div className="preview-info"><div><span className="preview-number">{overview ? '48' : selectedBot.number}</span><div><span className="eyebrow">{overview ? '48 × 48 FT' : selectedBot.category}</span><h2>{overview ? 'THE BATTLEBOX' : selectedBot.name}</h2><p>{overview ? 'Steel floor · Upper Deck · active hazards' : selectedBot.tagline}</p><span className="bot-version">{overview ? 'WCVII-ERA ARENA' : botVersion}</span></div></div>{!overview ? <span className="preview-weight">250<span>LB<br />CLASS</span></span> : null}</div>
-            <div className="preview-bottom"><span>3D PROTOTYPE <i /> ARENA V0.7.4</span></div>
+            <div className="preview-bottom"><span>3D PROTOTYPE <i /> ARENA V0.7.5</span></div>
           </> : <>
             <div className="match-header"><HealthBar player={local} local /><div className="match-clock"><span>{phase?.kind === 'finished' ? 'MATCH ENDED' : phase?.kind === 'fighting' ? 'ROUND 01' : 'BATTLEBOTS ARENA'}</span><strong>{phase?.kind === 'finished' ? 'FINAL' : phase?.kind === 'fighting' ? formatTime(phase.seconds) : formatTime(MATCH_SECONDS)}</strong><span className={`connection-label ${status === 'connected' || phase?.kind === 'finished' ? '' : 'connection-label--lost'}`}><i />{phase?.kind === 'finished' ? 'COMPLETE' : status === 'connected' ? 'LIVE' : status.toUpperCase()}</span></div><HealthBar player={opponent} /></div>
             {fighting ? <div className={`arena-hazards ${sawCutting ? 'arena-hazards--cutting' : sawWarning ? 'arena-hazards--warning' : ''}`} aria-label="Arena hazard status"><span className="hazard-saws"><i />KILLSAWS {sawUnlockIn > 0 ? <>IN <strong>{formatTime(sawUnlockIn)}</strong></> : <strong>{sawCutting ? 'CUTTING' : sawWarning ? 'WARNING' : 'ARMED'}</strong>}</span><span className="hazard-screws">SCREWS <strong>{snapshot?.arena.hazards.some((hazard) => hazard.kind === 'screw' && hazard.active) ? 'LIVE' : 'STANDBY'}</strong></span></div> : null}
@@ -553,7 +551,7 @@ export function App() {
 
     </main>
 
-    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.7.4</span></span></footer>
+    <footer className="site-footer" hidden={inRoom}><span>IT’S ROBOT FIGHTING TIME.</span><span>BATTLEBOTS ARENA <i /> EARLY PLAYABLE BUILD <span className="footer-version">V0.7.5</span></span></footer>
 
     {error ? <div className="toast" role="alert"><Icon name="help" size={18} /><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="Dismiss message"><Icon name="close" size={16} /></button></div> : null}
 

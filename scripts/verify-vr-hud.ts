@@ -2,114 +2,90 @@ import assert from 'node:assert/strict';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
 import { Scene } from '@babylonjs/core/scene';
 import { FreeCamera } from '@babylonjs/core/Cameras/freeCamera';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { PointerInfo, PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
-import type { IPointerEvent } from '@babylonjs/core/Events/deviceInputEvents';
-import { PickingInfo } from '@babylonjs/core/Collisions/pickingInfo';
+import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { createVRHud } from '../src/client/game/vr-hud';
 import { createSimulation } from '../src/server/simulation';
-import type { VRAction } from '../src/shared/vr';
 
 const engine = new NullEngine({ renderWidth: 960, renderHeight: 540, textureSize: 512, deterministicLockstep: false, lockstepMaxSteps: 4 });
 const scene = new Scene(engine);
 const camera = new FreeCamera('vr-hud-proof-camera', new Vector3(0, 5.3, -29), scene);
 camera.setTarget(new Vector3(0, 5.3, 0)); camera.getViewMatrix(true);
-const actions: VRAction[] = [];
-const drives: { throttle: number; steer: number }[] = [];
-const hud = createVRHud(scene, { onAction: (action) => actions.push(action), onDrive: (throttle, steer) => drives.push({ throttle, steer }) });
+const pointerObservers = scene.onPointerObservable.observers.length;
+const hud = createVRHud(scene);
 const simulation = await createSimulation('vr-hud-proof');
 simulation.addPlayer('a', 'Doctor', { botId: 'witchdoctor', paint: 'signature' });
 simulation.addPlayer('b', 'Tombstone', { botId: 'tombstone', paint: 'signature' });
 
-function pointer(type: number, meshName: string | null, pointerId = 1): void {
-  const pick = new PickingInfo();
-  pick.hit = meshName !== null;
-  pick.pickedMesh = meshName ? scene.getMeshByName(meshName) : null;
-  const event: IPointerEvent = {
-    type: type === PointerEventTypes.POINTERUP ? 'pointerup' : 'pointerdown', pointerId, pointerType: 'xr',
-    inputIndex: 2, button: 0, buttons: type === PointerEventTypes.POINTERUP ? 0 : 1,
-    clientX: 0, clientY: 0, offsetX: 0, offsetY: 0, pageX: 0, pageY: 0, x: 0, y: 0,
-    movementX: 0, movementY: 0, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false,
-    target: null, preventDefault() {},
-  };
-  scene.onPointerObservable.notifyObservers(new PointerInfo(type, event, pick));
-}
-function click(name: string, pointerId = 1): void {
-  pointer(PointerEventTypes.POINTERDOWN, name, pointerId);
-  pointer(PointerEventTypes.POINTERUP, null, pointerId);
-}
-
 try {
-  assert.equal(hud.stats.meshes, 19); assert.equal(scene.meshes.length, 19);
+  assert.equal(hud.stats.meshes, 1); assert.equal(scene.meshes.length, 1); assert.equal(scene.materials.length, 1);
   assert.equal(hud.stats.textures, 0, 'NullEngine proof uses no DOM texture allocation.');
-  assert.equal(hud.stats.redraws, 1, 'The factory draws the initial atlas before a match or shader prewarm.');
-  assert.equal(scene.getMeshByName('vr-desk-screen')?.metadata.status, 'NO MATCH');
-  hud.setMatch(simulation.snapshot(), 'a');
-  click('vr-control-ready'); assert.deepEqual(actions, [], 'Inactive panels cannot dispatch a click.');
-  hud.setActive(true, camera);
-  assert.ok(hud.root.isEnabled());
-  assert.ok(Math.abs(hud.root.position.z + 24.5) < 0.01);
-  assert.ok(Math.abs(hud.root.position.x - 3.3) < 0.01, 'The tablet sits to the right, leaving the arena center open.');
-  assert.ok(Math.abs(hud.root.position.y - 3.9) < 0.01, 'The desk is below eye level.');
-  assert.ok(Math.abs(hud.root.scaling.x - 4.2 / 5.5) < 0.001, 'The tablet width is 4.2 feet.');
-  const anchored = hud.root.position.clone();
-  camera.position.x = 3; camera.getViewMatrix(true); hud.pulse(1 / 90);
-  assert.ok(hud.root.position.equals(anchored), 'Looking or moving the head does not drag the desk.');
-  pointer(PointerEventTypes.POINTERDOWN, 'vr-control-ready');
-  pointer(PointerEventTypes.POINTERDOWN, 'vr-control-ready');
-  assert.deepEqual(actions, ['ready'], 'Repeated down events do not issue repeated lifecycle commands.');
-  pointer(PointerEventTypes.POINTERUP, null);
+  assert.equal(hud.stats.redraws, 1, 'The initial atlas uploads before shader prewarming.');
+  assert.equal(scene.onPointerObservable.observers.length, pointerObservers, 'The HUD installs no input handlers.');
+  const screen = scene.getMeshByName('vr-status-screen'); assert.ok(screen);
+  assert.equal(screen.metadata.readOnly, true); assert.equal(screen.metadata.status, 'NO MATCH');
+  assert.equal(screen.isPickable, false); assert.equal(hud.root.isEnabled(), false);
+  assert.equal(scene.meshes.some((mesh) => mesh.name.startsWith('vr-control-') || mesh.metadata?.action), false);
+  hud.setMatch(simulation.snapshot(), 'a'); hud.setActive(true, camera);
+  assert.equal(hud.root.isEnabled(), true);
+  assert.ok(Math.abs(hud.root.position.x) < 0.001);
+  assert.ok(Math.abs(hud.root.position.y - 7.5) < 0.001);
+  assert.ok(Math.abs(hud.root.position.z + 21) < 0.001);
+  assert.equal(screen.metadata.status, 'LOBBY');
+  assert.equal(screen.metadata.timer, '03:00');
+  const bounds = screen.getBoundingInfo().boundingBox.extendSize;
+  const horizontalDegrees = 2 * Math.atan(bounds.x / 8) * 180 / Math.PI;
+  const lowerDegrees = Math.atan((2.2 - bounds.y) / 8) * 180 / Math.PI;
+  const upperDegrees = Math.atan((2.2 + bounds.y) / 8) * 180 / Math.PI;
+  assert.ok(horizontalDegrees > 30 && horizontalDegrees < 35, 'The strip uses about 33 degrees of horizontal view.');
+  assert.ok(lowerDegrees > 12 && upperDegrees < 18, 'The strip stays above the bots and below 18 degrees.');
+  assert.ok(8 > camera.minZ * 4, 'The strip stays clear of the camera near plane.');
+  assert.ok(upperDegrees * Math.PI / 180 < camera.fov / 2, 'The whole strip fits inside the default 46-degree vertical view.');
+  camera.position.x = 3;
+  camera.rotationQuaternion = Quaternion.FromEulerAngles(-0.15, 0.4, 0.08);
+  camera.getViewMatrix(true); hud.pulse(1 / 90);
+  const expected = camera.globalPosition.add(camera.getDirection(Vector3.Forward()).scale(8)).add(camera.getDirection(Vector3.Up()).scale(2.2));
+  assert.ok(Vector3.Distance(hud.root.position, expected) < 0.001, 'The strip follows the current head pose each frame.');
+  const cameraRotation = Quaternion.Identity();
+  camera.getWorldMatrix().decompose(undefined, cameraRotation);
+  assert.ok(Math.abs(Quaternion.Dot(hud.root.rotationQuaternion ?? Quaternion.Identity(), cameraRotation)) > 0.9999);
+  hud.root.computeWorldMatrix(true);
+  screen.computeWorldMatrix(true);
+  const inverseCamera = Matrix.Invert(camera.getWorldMatrix());
+  for (const corner of screen.getBoundingInfo().boundingBox.vectorsWorld) {
+    const inView = Vector3.TransformCoordinates(corner, inverseCamera);
+    assert.ok(inView.z > camera.minZ);
+    assert.ok(Math.abs(inView.y / inView.z) < Math.tan(camera.fov / 2), 'Head motion keeps every HUD corner inside the vertical view.');
+    assert.ok(Math.abs(inView.x / inView.z) < Math.tan(camera.fov / 2) * engine.getAspectRatio(camera), 'Every HUD corner stays inside the horizontal view.');
+  }
   simulation.setReady('a', true); simulation.setReady('b', true);
   for (let tick = 0; tick < 90; tick += 1) simulation.step(1 / 30, tick * 1000 / 30);
-  const fighting = simulation.snapshot();
-  assert.equal(fighting.phase.kind, 'fighting');
-  hud.setMatch(fighting, 'a');
-  const yourLife = scene.getMeshByName('vr-desk-your-life-fill'); const screen = scene.getMeshByName('vr-desk-screen');
-  assert.ok(yourLife && screen);
+  const fighting = simulation.snapshot(); assert.equal(fighting.phase.kind, 'fighting');
+  hud.setMatch(fighting, 'a'); assert.equal(screen.metadata.status, 'LIVE');
   const redraws = hud.stats.redraws;
-  hud.setMatch(fighting, 'a');
-  assert.equal(hud.stats.redraws, redraws, 'Identical snapshots do not redraw the atlas.');
-  click('vr-control-weapon'); click('vr-control-recover'); click('vr-control-pulverize');
-  assert.deepEqual(actions, ['ready', 'weapon', 'recover', 'pulverize']);
-  const beforeHeld = drives.length;
-  hud.pulse(1 / 90);
-  assert.equal(drives.length, beforeHeld, 'The desk does not overwrite controller input when no pad is held.');
-  pointer(PointerEventTypes.POINTERDOWN, 'vr-control-drive-forward', 7);
-  pointer(PointerEventTypes.POINTERDOWN, 'vr-control-drive-left', 8);
-  hud.pulse(1 / 90);
-  assert.deepEqual(drives.at(-1), { throttle: 1, steer: -1 });
-  pointer(PointerEventTypes.POINTERUP, null, 7);
-  assert.deepEqual(drives.at(-1), { throttle: 0, steer: -1 }, 'Releasing outside the mesh stops that direction.');
-  pointer(PointerEventTypes.POINTERUP, null, 8);
-  assert.deepEqual(drives.at(-1), { throttle: 0, steer: 0 });
-  pointer(PointerEventTypes.POINTERDOWN, 'vr-control-drive-reverse-right', 10);
-  assert.deepEqual(drives.at(-1), { throttle: -1, steer: 1 }, 'A single hand/gaze pointer can reverse and steer together.');
-  pointer(PointerEventTypes.POINTERUP, null, 10);
+  hud.setMatch(fighting, 'a'); hud.pulse(1 / 90);
+  assert.equal(hud.stats.redraws, redraws, 'An unchanged snapshot and head motion do not redraw the atlas.');
   const local = fighting.players.find((player) => player.id === 'a'); assert.ok(local);
-  local.health = 0.2;
+  const opponent = fighting.players.find((player) => player.id === 'b'); assert.ok(opponent);
+  local.health = 0.2; opponent.health = 62.3;
+  fighting.phase = { kind: 'fighting', seconds: 59.2 };
   hud.setMatch(fighting, 'a');
-  assert.equal(screen.metadata.localHealth, 1, 'Alive fractional hull is never labeled zero.');
-  assert.equal(yourLife.scaling.x, 0.002);
-  pointer(PointerEventTypes.POINTERDOWN, 'vr-control-drive-reverse', 9);
-  hud.setActive(false);
-  assert.deepEqual(drives.at(-1), { throttle: 0, steer: 0 }, 'Leaving or pausing VR neutralizes held driving.');
-  const afterPause = drives.length; hud.pulse(1 / 90); assert.equal(drives.length, afterPause);
+  assert.equal(screen.metadata.localHealth, 1, 'Alive fractional hull is never labelled zero.');
+  assert.equal(screen.metadata.opponentHealth, 63); assert.equal(screen.metadata.timer, '01:00');
+  hud.setActive(false); const pausedPosition = hud.root.position.clone();
+  camera.position.x += 2; camera.getViewMatrix(true); hud.pulse(1 / 90);
+  assert.equal(hud.root.isEnabled(), false); assert.ok(hud.root.position.equals(pausedPosition));
   hud.setActive(true, camera);
   fighting.phase = { kind: 'finished', result: { winnerId: 'b', reason: 'knockout' } };
   local.health = 0; hud.setMatch(fighting, 'a');
-  assert.equal(yourLife.isVisible, false); assert.equal(screen.metadata.status, 'BACK TO THE WORKSHOP');
-  click('vr-control-ready');
-  assert.equal(actions.at(-1), 'rematch', 'The lifecycle button becomes rematch without allocating a new mesh.');
-  const actionCount = actions.length;
-  click('vr-control-weapon'); pointer(PointerEventTypes.POINTERDOWN, 'vr-control-drive-forward');
-  assert.equal(actions.length, actionCount, 'Finished matches disable combat buttons.');
-  click('vr-control-recenter', 2); click('vr-control-exit', 3); click('vr-control-leave', 4);
-  assert.deepEqual(actions.slice(-3), ['recenter', 'exit', 'leave']);
+  assert.equal(screen.metadata.localHealth, 0); assert.equal(screen.metadata.status, 'DEFEAT'); assert.equal(screen.metadata.timer, 'FINAL');
+  fighting.phase.result.winnerId = 'a'; hud.setMatch(fighting, 'a'); assert.equal(screen.metadata.status, 'VICTORY');
+  fighting.phase.result.winnerId = null; hud.setMatch(fighting, 'a'); assert.equal(screen.metadata.status, 'DRAW');
+  assert.equal(screen.isPickable, false); assert.equal(scene.onPointerObservable.observers.length, pointerObservers);
   scene.render();
-  assert.equal(scene.meshes.length, 19);
-  process.stdout.write(`${JSON.stringify({ check: 'PASS: VR driver desk, life bars, lifecycle, ray controls, held drive and cleanup', ...hud.stats })}\n`);
+  process.stdout.write(`${JSON.stringify({ check: 'PASS: read-only VR health, clock, result status, upper-view placement, head tracking and cleanup', ...hud.stats, horizontalDegrees, lowerDegrees, upperDegrees })}\n`);
 } finally {
-  simulation.dispose(); hud.dispose();
+  simulation.dispose(); hud.dispose(); hud.dispose();
   assert.equal(scene.meshes.length, 0); assert.equal(scene.materials.length, 0);
+  assert.equal(scene.onPointerObservable.observers.length, pointerObservers);
   scene.dispose(); engine.dispose();
 }

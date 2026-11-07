@@ -1,15 +1,27 @@
 # Release verification
 
-The v0.7.1 build was checked locally with the tests below. Measurements describe this computer and local connections. Load and detailed damage-transport measurements are retained from v0.5; the explosion presentation check is retained from v0.6.
+## Current v0.7.5 checks
 
-The current Pages build uses `/bb/`. The earlier release measurements below used the previous `/battlebots-arena/` path.
+All 77 automated tests pass, including VR controller input and the chase tracking parent. The read-only HUD proof also passes with one non-pickable mesh, one material and no pointer observers. It checks health, clock and result status, head-pose following, view bounds, near-plane clearance and disposal. Run `pnpm test` and `pnpm verify:vr-hud` to repeat these checks.
 
-## Automated checks
+Version 0.7.5 follows the player's bot with a third-person chase view. WebXR keeps native head tracking and stereo eye separation. VR has no screen buttons, pointer rays or control tablet. Its thin health and clock strip stays above the center of the view. Controller input handles ready, driving, weapons, recovery, pulverizers, rematch and recenter. The native headset menu exits VR.
+
+The production Pages bundle passed stereo emulation with real projection textures, 219 rendered frames and no graphics errors. A timed controller sequence started combat, drove the robot and moved the chase camera about five feet. A quarter-meter physical head movement shifted the rendered view by 0.82 feet; Y recenter restored the chase center. A second session restarted a finished fight through the right trigger and repeated the driving check. VR hid the browser controls, and normal controls returned after session exit.
+
+The user confirmed working immersive VR on a physical Quest 3 with v0.7.4. The new v0.7.5 chase view and controller-only interface still need a physical comfort and performance test.
+
+## Prior-build results
+
+The measurements below are retained from earlier releases. They describe this computer and local connections, not a current headset benchmark. Load and detailed damage-transport measurements are from v0.5. The explosion presentation check is from v0.6. The fixed-station VR tablet checks describe builds before v0.7.5.
+
+The current Pages build uses `/bb/`. Some earlier measurements used the previous `/battlebots-arena/` path.
+
+### Prior automated checks
 
 | Check | Result |
 | --- | --- |
 | TypeScript and production client/server builds | Passed |
-| Simulation, impacts, flight, damage, hazards, prediction, steering, static practice, VR input and authentication | 69 tests passed |
+| Simulation, impacts, flight, damage, hazards, prediction, steering, static practice, VR input and authentication | 69 tests passed in the v0.7.1 check |
 | Static practice | The real Rapier simulation completed countdown, combat, explosion and rematch in a browser Worker without login or a game server |
 | Worker clock | Timer and input wakes share a bounded accumulator; real tests verify no double-speed simulation and reject malformed worker commands |
 | VR input | Drift dead zone, both-hand action edges, single-controller fallback, HUD trigger conflict, pause baseline and non-XR cleanup passed |
@@ -36,19 +48,19 @@ Airborne fixtures verify gravity, angular motion and the absence of drive, braki
 
 The load test measured 0.945 ms average simulation work per update, a 183 ms maximum snapshot gap, and 103.4 MiB process RSS. It uses neutral driving with active spinners and does not represent maximum debris activity. Other local verification processes were running during this sample. The free Render blueprint remains limited to two rooms; cloud capacity must be measured separately.
 
-## Browser checks
+### Prior browser checks
 
-### VR entry regression
+#### Fixed-station VR entry regression
 
 An immersive reproduction used Meta's [IWER runtime](https://meta-quest.github.io/immersive-web-emulation-runtime/getting-started.html) with the exact production JavaScript, without importing a separate Babylon instance. A real WebGL framebuffer with color and depth attachments exercised both eye viewports. Its completeness check passed and WebGL reported no error.
 
 The old camera code failed to place the rendered eyes at the driver station. With a synthetic tracking origin eight meters away on both horizontal axes and an initial 180-degree heading, the rendered eye remained near `(26.14, 5.25, -26.25)` feet, outside the BattleBox with an almost empty view. The fixed parent tracking origin placed it near `(-3.90, 5.30, -29.01)`, including stereo eye separation. The arena and control tablet were visible in both eyes. A quarter-meter head movement moved the view naturally, and recenter restored the station.
 
-The same production test withheld viewer poses for four seconds. The session stayed paused, then anchored correctly when the first valid pose arrived at approximately 4,007 ms. Controller A started the match, and pause/resume retained the correct view. A deliberately injected draw failure ended the immersive session and displayed its reason in the browser. These checks verify the emulated render and lifecycle paths; the Quest 3 still needs a physical retest.
+The same production test withheld viewer poses for four seconds. The session stayed paused, then anchored correctly when the first valid pose arrived at approximately 4,007 ms. Controller A started the match, and pause/resume retained the correct view. A deliberately injected draw failure ended the immersive session and displayed its reason in the browser. These prior-build checks verify the emulated render and lifecycle paths. The user later confirmed working immersive VR on Quest 3 with v0.7.4.
 
 Actual Babylon camera and controller-manager regressions cover the shared parent origin, unchanged native tracking poses, stereo separation, head movement and offline generic-trigger profile binding. The reproduction fixture and screenshots are local development artifacts in `.local`.
 
-### Desktop and mobile rendering
+#### Desktop and mobile rendering
 
 The static build was served under `/battlebots-arena/` to exercise the same base path as GitHub Pages. Browser practice ran without a session API or WebSocket server. Live combat showed damage, airborne motion and the new VR setup control; one 844 × 390 sample reported 59 fps with no horizontal overflow. Starting practice, knockout, rematch and leaving were exercised through the interface. No browser errors were recorded.
 
@@ -70,6 +82,6 @@ Scars are bounded at twelve per robot and detached rigid bodies at sixteen per r
 
 ## Remaining external checks
 
-Physical headset VR entry/exit, stereo images, actual hand/controller mappings, tracking, comfort and sustained frame rate remain unverified. Quest 3 is the first test target; other devices depend on their WebXR browser and available input. See [VR support](vr-support.md). Physical iPhone Safari and Android Chrome performance, touch feel, thermal behaviour, cloud-host capacity and real remote multiplayer remain unverified. Rotor inertia, damage thresholds and hazard forces are game reconstruction choices, not measured team telemetry. See [impact design](impact-design.md) and [arena references](arena-references.md).
+The v0.7.5 chase view, controller mappings, native exit, tracking, comfort and sustained frame rate need a physical Quest 3 retest. The user's v0.7.4 test confirmed working immersive VR, without detailed measurements. Other headsets remain unverified and require usable gamepad input in a compatible WebXR browser. See [VR support](vr-support.md). Physical iPhone Safari and Android Chrome performance, touch feel, thermal behaviour, cloud-host capacity and real remote multiplayer remain unverified. Rotor inertia, damage thresholds and hazard forces are game reconstruction choices, not measured team telemetry. See [impact design](impact-design.md) and [arena references](arena-references.md).
 
 Run `pnpm verify:multiplayer`, `pnpm verify:damage-network`, `pnpm verify:arena-network` and `pnpm verify:load` against a deployed URL to repeat the transport and capacity checks. The arena network check takes about two and a half minutes and uses the actual production clock.

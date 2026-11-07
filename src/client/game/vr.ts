@@ -1,14 +1,12 @@
-import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import type { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { WebXRExperienceHelper } from '@babylonjs/core/XR/webXRExperienceHelper';
 import { WebXRInput } from '@babylonjs/core/XR/webXRInput';
 import { WebXRState, WebXRTrackingState } from '@babylonjs/core/XR/webXRTypes';
-import { WebXRControllerPointerSelection } from '@babylonjs/core/XR/features/WebXRControllerPointerSelection';
 import '@babylonjs/core/XR/motionController/webXRMotionControllerManager';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
 import type { Scene } from '@babylonjs/core/scene';
 import type { WebXRInputSource } from '@babylonjs/core/XR/webXRInputSource';
-import type { WebXRCamera } from '@babylonjs/core/XR/webXRCamera';
 import type { WebXRRenderTarget } from '@babylonjs/core/XR/webXRTypes';
 import type { MatchState } from '../../shared/protocol';
 import type { VRCallbacks, VRStatus } from '../../shared/vr';
@@ -16,24 +14,10 @@ import { readVRInput } from './vr-input';
 import type { VRControllerSample } from './vr-input';
 import { VRDiagnostics } from './vr-diagnostics';
 import { attachVRLayers, prepareVRLayers } from './vr-layers';
+import { VRChaseOrigin } from './vr-chase';
 
 export const VR_FEET_PER_METER = 3.28084;
 export const VR_CONTROLLER_PROFILE = 'generic-trigger';
-const EYE_HEIGHT = 5.3;
-
-/** Place the tracking origin, leaving native headset/eye poses untouched. */
-export function alignVRStation(camera: WebXRCamera, origin: TransformNode, slot: number): void {
-  const x = slot === 0 ? -4 : 4;
-  const z = slot === 0 ? -29 : 29;
-  const heading = Math.atan2(-x, -z);
-  origin.rotationQuaternion ??= Quaternion.Identity();
-  Quaternion.RotationYawPitchRollToRef(heading - camera.rotationQuaternion.toEulerAngles().y, 0, 0, origin.rotationQuaternion);
-  const headOffset = Vector3.Zero();
-  camera.position.rotateByQuaternionToRef(origin.rotationQuaternion, headOffset);
-  origin.position.set(x - headOffset.x, EYE_HEIGHT - headOffset.y, z - headOffset.z);
-  origin.computeWorldMatrix(true);
-  camera.getViewMatrix(true);
-}
 
 export interface VRRig {
   readonly active: boolean;
@@ -42,25 +26,20 @@ export interface VRRig {
   enter(): Promise<void>;
   exit(): Promise<void>;
   recenter(): void;
+  updateView(position: Readonly<Vector3>, target: Readonly<Vector3>): void;
   getReport(): string;
   pulse(dt: number): void;
-  setMatch(snapshot: MatchState | null, localId: string | null): void;
+  setMatch(snapshot: MatchState | null): void;
   dispose(): void;
 }
 
-export interface VRRigCallbacks extends VRCallbacks {
-  onInputLost?(): void;
-}
-
-/** WebXR owns the headset pose. Combat never moves or shakes this camera. */
-export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCallbacks): VRRig {
+/** WebXR owns the headset pose. The chase view moves only its tracking parent. */
+export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRCallbacks): VRRig {
   let helper: WebXRExperienceHelper | null = null;
   let input: WebXRInput | null = null;
-  let selection: WebXRControllerPointerSelection | null = null;
   let renderTarget: WebXRRenderTarget | null = null;
   let projectionDepth: Pick<XRProjectionLayerInit, 'depthFormat'> = { depthFormat: 0x1902 };
   let match: MatchState | null = null;
-  let stationSlot = 0;
   let disposed = false;
   let entering = false;
   let recoveringFromFailure = false;
@@ -72,6 +51,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
   let status: VRStatus = { kind: 'checking' };
   const diagnostics = new VRDiagnostics(scene, (message) => { void recover(new Error(message)); });
   const origin = new TransformNode('vr-tracking-origin', scene);
+  const chase = new VRChaseOrigin(origin);
   const contextLost = scene.getEngine().onContextLostObservable.add(() => {
     void recover(new Error('The graphics context was lost while rendering VR.'));
   });
@@ -84,7 +64,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
   function neutral(): void {
     baseline = true;
     held.clear();
-    if (!disposed) { callbacks.onDrive(0, 0); callbacks.onInputLost?.(); }
+    if (!disposed) callbacks.onDrive(0, 0);
   }
 
   function active(): boolean { return helper?.sessionManager.inXRSession ?? false; }
@@ -153,8 +133,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
     if (!helper || !active()) return;
     neutral();
     if (!hasPose()) { awaitingTrackedAnchor = true; return; }
-    alignVRStation(helper.camera, origin, stationSlot);
-    awaitingTrackedAnchor = false;
+    awaitingTrackedAnchor = !chase.recenter(helper.camera);
   }
 
   function sample(controller: WebXRInputSource): VRControllerSample {
@@ -172,15 +151,12 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
     const primary = components?.[handedness === 'left' ? 'x-button' : 'a-button'];
     const secondary = components?.[handedness === 'left' ? 'y-button' : 'b-button'];
     const trigger = motion?.getComponentOfType('trigger');
-    const metadata: unknown = selection?.getMeshUnderPointer(controller.uniqueId)?.metadata;
-    const onHud = typeof metadata === 'object' && metadata !== null && 'vrControl' in metadata && metadata.vrControl === true;
     return {
       id: controller.uniqueId, handedness,
       stick: component?.axes ?? fallback,
       trigger: trigger?.pressed ?? gamepad?.buttons[0]?.pressed ?? false,
       primary: primary?.pressed ?? gamepad?.buttons[4]?.pressed ?? false,
       secondary: secondary?.pressed ?? gamepad?.buttons[5]?.pressed ?? false,
-      onHud,
     };
   }
 
@@ -221,22 +197,6 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         disableControllerAnimation: true,
         disableOnlineControllerRepository: true,
       });
-      selection = helper.featuresManager.enableFeature(WebXRControllerPointerSelection.Name, 'stable', {
-        xrInput: input,
-        enablePointerSelectionOnAllControllers: true,
-        disableScenePointerVectorUpdate: true,
-        disablePointerUpOnTouchOut: false,
-        forceGazeMode: false,
-        useUtilityLayer: false,
-        maxPointerDistance: 24,
-      });
-      selection.raySelectionPredicate = (mesh) => {
-        const metadata: unknown = mesh.metadata;
-        return mesh.isEnabled() && mesh.isPickable && typeof metadata === 'object' && metadata !== null &&
-          'vrControl' in metadata && metadata.vrControl === true;
-      };
-      selection.disablePointerLighting = true;
-      selection.disableSelectionMeshLighting = true;
       renderTarget = helper.sessionManager.getWebXRRenderTarget({
         canvasElement: scene.getEngine().getRenderingCanvas() ?? undefined,
         // The HUD clears scene depth for its overlay pass, so it is not valid
@@ -248,6 +208,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         // Keep tracking local; the parent is positioned once that pose exists.
         camera.position.setAll(0);
         camera.rotationQuaternion.set(0, 0, 0, 1);
+        chase.reset();
         awaitingTrackedAnchor = true;
       });
       helper.sessionManager.onXRFrameObservable.add(() => {
@@ -293,14 +254,9 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
           report({ kind: helper?.state !== WebXRState.IN_XR ? 'entering' : focused() ? 'active' : 'paused' });
         };
         removeVisibilityListener?.();
-        // Babylon may omit its pointer-up when a ray leaves all pickable meshes.
-        // Native selectend still releases held dashboard controls in that case.
-        const releaseSelection = () => callbacks.onInputLost?.();
         session.addEventListener('visibilitychange', visibility);
-        session.addEventListener('selectend', releaseSelection);
         removeVisibilityListener = () => {
           session.removeEventListener('visibilitychange', visibility);
-          session.removeEventListener('selectend', releaseSelection);
         };
       });
       input.onControllerRemovedObservable.add(() => neutral());
@@ -308,7 +264,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
     } catch (cause: unknown) {
       input?.dispose(); input = null;
       renderTarget?.dispose(); renderTarget = null;
-      helper?.featuresManager.dispose(); helper?.dispose(); helper = null; selection = null;
+      helper?.featuresManager.dispose(); helper?.dispose(); helper = null;
       origin.dispose();
       report({ kind: 'unavailable', reason: cause instanceof Error ? cause.message : 'The VR session could not initialize in this browser.' });
     }
@@ -351,6 +307,12 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       await endSession();
     },
     recenter,
+    updateView(position, target) {
+      chase.setView(position, target);
+      if (!helper || !active() || helper.state !== WebXRState.IN_XR || !hasPose()) return;
+      if (awaitingTrackedAnchor) recenter();
+      else chase.update(helper.camera);
+    },
     getReport() { return diagnostics.getReport(); },
     pulse(_dt) {
       if (disposed || !active() || !input) return;
@@ -367,10 +329,8 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
         else callbacks.onAction(action);
       }
     },
-    setMatch(snapshot, localId) {
+    setMatch(snapshot) {
       match = snapshot;
-      const slot = snapshot?.players.find((player) => player.id === localId)?.spawnSlot ?? 0;
-      if (slot !== stationSlot) { stationSlot = slot; recenter(); }
     },
     dispose() {
       if (disposed) return;
@@ -382,7 +342,7 @@ export function createVR(scene: Scene, desktopCamera: Camera, callbacks: VRRigCa
       if (helper && active()) void helper.exitXRAsync().catch(() => undefined);
       input?.dispose(); input = null;
       renderTarget?.dispose(); renderTarget = null;
-      helper?.featuresManager.dispose(); helper?.dispose(); helper = null; selection = null;
+      helper?.featuresManager.dispose(); helper?.dispose(); helper = null;
       origin.dispose();
     },
   };

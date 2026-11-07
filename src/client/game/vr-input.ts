@@ -7,7 +7,6 @@ export interface VRControllerSample {
   trigger: boolean;
   primary: boolean;
   secondary: boolean;
-  onHud: boolean;
 }
 
 export interface VRInputFrame {
@@ -30,11 +29,11 @@ export function vrStick(x: number, y: number): { throttle: number; steer: number
 export function readVRInput(samples: readonly VRControllerSample[], previous: ReadonlySet<string>, enabled: boolean): VRInputFrame {
   const held = new Set<string>();
   const actions: VRAction[] = [];
-  const action = (sample: VRControllerSample, button: string, pressed: boolean, value: VRAction, blocked = false) => {
+  const action = (sample: VRControllerSample, button: string, pressed: boolean, value: VRAction) => {
     if (!pressed) return;
     const key = `${sample.id}:${button}`;
     held.add(key);
-    if (enabled && !blocked && !previous.has(key) && !actions.includes(value)) actions.push(value);
+    if (enabled && !previous.has(key) && !actions.includes(value)) actions.push(value);
   };
   for (const sample of samples) {
     if (sample.handedness === 'left') {
@@ -43,8 +42,7 @@ export function readVRInput(samples: readonly VRControllerSample[], previous: Re
     } else {
       action(sample, 'primary', sample.primary, 'weapon');
       action(sample, 'secondary', sample.secondary, 'recover');
-      // A trigger used to pick the in-world dashboard cannot also start a weapon.
-      action(sample, 'trigger', sample.trigger, 'weapon', sample.onHud);
+      action(sample, 'trigger', sample.trigger, 'weapon');
     }
   }
   const driver = samples.find((sample) => sample.handedness === 'left')

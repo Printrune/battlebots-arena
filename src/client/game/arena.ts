@@ -96,8 +96,8 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
   const lifeBars = createLifeBars(scene, camera);
   const debris = new DebrisRenderer(scene, (id) => bots.get(id)?.model);
   const explosions = createExplosions(scene);
-  const vrHud = createVRHud(scene, callbacks);
-  const vr = createVR(scene, camera, { ...callbacks, onInputLost: () => vrHud.releaseDrive() });
+  const vrHud = createVRHud(scene);
+  const vr = createVR(scene, camera, callbacks);
   let lastVRFocus = false;
   let lastVRActive = false;
   const previewId = 'preview-selected';
@@ -122,6 +122,7 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
   let overview = false;
   let orbitPointer: { id: number; x: number; y: number } | null = null;
   const cameraTarget = new Vector3(0, 0.5, 0);
+  const chaseCameraPosition = camera.position.clone();
   const desiredCamera = new Vector3();
   const targetPosition = new Vector3();
   const targetQuaternion = Quaternion.Identity();
@@ -270,8 +271,8 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
   fitResolution();
   preview();
   // Compile the hidden impact overlay while loading, before the first real hit.
-  const deskMaterials = new Map(vrHud.root.getChildMeshes().filter((mesh) => mesh.material).map((mesh) => [mesh.material, mesh]));
-  await Promise.all([explosions.ready(), ...[...deskMaterials].map(([material, mesh]) => material?.forceCompilationAsync(mesh)), ...[...bots.values()].map(async ({ model }) => {
+  const hudMaterials = new Map(vrHud.root.getChildMeshes().filter((mesh) => mesh.material).map((mesh) => [mesh.material, mesh]));
+  await Promise.all([explosions.ready(), ...[...hudMaterials].map(([material, mesh]) => material?.forceCompilationAsync(mesh)), ...[...bots.values()].map(async ({ model }) => {
     const scar = model.meshes.find((mesh) => mesh.name.includes('damage-scar-'));
     if (scar?.material) await scar.material.forceCompilationAsync(scar);
   })]);
@@ -293,10 +294,18 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
     if (vr.active !== lastVRActive) {
       lastVRActive = vr.active;
       scene.shadowsEnabled = !vr.active;
-      if (!vr.active) fitResolution();
+      if (!vr.active) {
+        // The XR helper restores its local head position to the desktop camera.
+        // Continue from the actual chase view when returning to the browser.
+        camera.position.copyFrom(chaseCameraPosition);
+        camera.setTarget(cameraTarget);
+        fitResolution();
+      }
     }
-    if (vr.active) shake = 0;
-    vrHud.pulse(dt);
+    if (vr.active) {
+      shake = 0;
+      if (finishFocus) finishFocus.remaining = Math.max(0, finishFocus.remaining - dt);
+    }
     if (vr.active) callbacks.onFrame();
     lifeBars.setCamera(vr.camera);
 
@@ -370,7 +379,7 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
         camera.setTarget(cameraTarget);
         finishFocus.remaining -= dt;
         canvas.dataset.opponentDirection = 'visible';
-      } else if (!vr.active && followed) {
+      } else if (followed) {
         const position = followed.model.root.position;
         const player = followed.state;
         followed.cameraYaw = player ? followHeading(followed.cameraYaw ?? player.yaw, player.yaw, player.grounded, dt) : 0;
@@ -387,7 +396,7 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
         Vector3.LerpToRef(cameraTarget, targetPosition, 1 - Math.exp(-dt * 13), cameraTarget);
         camera.setTarget(cameraTarget);
         const opponent = snapshot.players.find((item) => item.id !== localId);
-        if (opponent) {
+        if (opponent && !vr.active) {
           const viewport = new Viewport(0, 0, engine.getRenderWidth(), engine.getRenderHeight());
           const projected = Vector3.Project(new Vector3(opponent.position.x, opponent.position.y, opponent.position.z), identity, scene.getTransformMatrix(), viewport);
           const inFrame = projected.z > 0 && projected.z < 1 && projected.x > 25 && projected.x < engine.getRenderWidth() - 25 && projected.y > 25 && projected.y < engine.getRenderHeight() - 25;
@@ -420,6 +429,9 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
       spark.mesh.scaling.setAll(Math.min(1, spark.life * 5));
       if (spark.life <= 0) spark.mesh.isVisible = false;
     }
+    chaseCameraPosition.copyFrom(camera.position);
+    vr.updateView(camera.position, cameraTarget);
+    vrHud.pulse(dt);
     if (!vr.active && shake > 0.002) {
       camera.position.x += (Math.random() - 0.5) * shake;
       camera.position.y += (Math.random() - 0.5) * shake;
@@ -449,7 +461,7 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
       snapshot = next;
       scene.fogDensity = 0.012;
       stage.setState(next.arena);
-      vr.setMatch(next, playerId);
+      vr.setMatch(next);
       vrHud.setMatch(next, playerId);
       localId = playerId;
       lastUpdateAt = performance.now();
@@ -500,7 +512,7 @@ export async function createArena(canvas: HTMLCanvasElement, callbacks: VRCallba
       explosions.clear();
       finishFocus = null;
       stage.setState(null);
-      vr.setMatch(null, null);
+      vr.setMatch(null);
       vrHud.setMatch(null, null);
       scene.fogDensity = overview ? 0.003 : 0.012;
       localId = null;

@@ -5,7 +5,7 @@ import type { VRControllerSample } from '../src/client/game/vr-input';
 
 function controller(changes: Partial<VRControllerSample> = {}): VRControllerSample {
   return { id: 'right', handedness: 'right', stick: { x: 0, y: 0 }, trigger: false, primary: false,
-    secondary: false, onHud: false, ...changes };
+    secondary: false, ...changes };
 }
 
 test('VR sticks remove drift, preserve full travel and neutralize non-finite axes', () => {
@@ -35,11 +35,12 @@ test('controller actions fire once per press and map both hands without branding
   assert.deepEqual(readVRInput(samples, released.held, true).actions, first.actions);
 });
 
-test('dashboard selection consumes a trigger press until it is released', () => {
-  const selected = readVRInput([controller({ trigger: true, onHud: true })], new Set(), true);
-  assert.deepEqual(selected.actions, []);
-  assert.deepEqual(readVRInput([controller({ trigger: true })], selected.held, true).actions, []);
-  assert.deepEqual(readVRInput([controller({ trigger: true })], new Set(), true).actions, ['weapon']);
+test('the buttonless trigger fires once per press and deduplicates the face button action', () => {
+  const first = readVRInput([controller({ trigger: true, primary: true })], new Set(), true);
+  assert.deepEqual(first.actions, ['weapon']);
+  assert.deepEqual(readVRInput([controller({ trigger: true })], first.held, true).actions, []);
+  const released = readVRInput([], first.held, true);
+  assert.deepEqual(readVRInput([controller({ trigger: true })], released.held, true).actions, ['weapon']);
 });
 
 test('paused XR input has no drive/actions and baselines held buttons for resume', () => {

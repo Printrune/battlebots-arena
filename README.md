@@ -10,9 +10,9 @@ Play the free edition at [printrune.github.io/bb](https://printrune.github.io/bb
 
 Build the static edition with `pnpm build:pages`. The output is `dist/pages`, with assets rooted at `/bb/`. The Pages workflow publishes it over HTTPS from `codex/arena-demo`.
 
-In a compatible headset browser, start a match and select **Enter VR**. Practice waits for **Ready** on VR-capable browsers, allowing entry and permission prompts before combat starts. The player sits beside the BattleBox with head tracking and a fixed control tablet. Use the controller stick to drive, A/right trigger to toggle the weapon, B to recover and X to use pulverizers. The tablet also supports ray-selected actions, diagonal hold-to-drive controls, ready, rematch, recenter and exit. Bot impacts and defeat effects do not move the VR camera.
+In a compatible headset browser, start a match and select **VR**. Practice waits in the lobby before combat. Version 0.7.5 uses a third-person chase view with native head tracking and a thin, read-only health and clock strip. VR has no screen buttons or pointer rays. The left stick drives. Right A or the right trigger readies, toggles the weapon or requests a rematch, depending on match state. Right B operates recovery, left X uses pulverizers and left Y recenters. Exit through the headset's native system menu.
 
-Quest 3 is the first hardware target. Other headsets use runtime WebXR detection. No physical headset has been tested yet, so compatibility, controller mappings and sustained frame rate remain unverified. See [VR support and setup](docs/vr-support.md).
+The user confirmed working immersive VR on a physical Quest 3 with v0.7.4. The v0.7.5 chase view and controller-only interface need a physical retest. Other headsets use runtime WebXR detection and require usable gamepad controls. Compatibility and sustained frame rate remain unverified on those devices. See [VR support and setup](docs/vr-support.md).
 
 ## Run locally
 
